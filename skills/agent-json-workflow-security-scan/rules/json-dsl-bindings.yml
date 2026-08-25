@@ -1,0 +1,34 @@
+schema_version: 1.0.0
+bindings:
+  - {rule_ids: [FLOW-001, FLOW-002], node_types: ["*"], dsl_fields: [nodes, edges, id, type], runtime_context: []}
+  - {rule_ids: [FLOW-003], node_types: ["*"], dsl_fields: [outputName, params, input, output, body, query, header, conditionList, loopInput], runtime_context: []}
+  - {rule_ids: [FLOW-004, FLOW-006], node_types: [HEAD, JUDGE, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW, CODE], dsl_fields: [edges, sourceIndex, conditionList, variableType], runtime_context: [business_action_policy]}
+  - {rule_ids: [FLOW-005], node_types: [NEW_KNOWLEDGE, MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [params, prompt, tools, knlToolList, edges], runtime_context: [content_provenance]}
+  - {rule_ids: [FLOW-007], node_types: [LOOP], dsl_fields: [loopInput, nodes, edges, validateStatus], runtime_context: [runtime_iteration_limit]}
+  - {rule_ids: [FLOW-008], node_types: [HEAD, MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW, TEMPLATE, INTERMEDIATE_OUTPUT], dsl_fields: [paramList, params, input, output, body, query, header], runtime_context: [data_classification, egress_policy]}
+  - {rule_ids: [FLOW-009], node_types: [MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW, CODE], dsl_fields: [output, outputFormat, outputType, params, input, body, query, header], runtime_context: []}
+  - {rule_ids: [FLOW-010], node_types: [AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [edges, tools, urlMethod], runtime_context: [idempotency, compensation]}
+  - {rule_ids: [FLOW-011], node_types: [WORKFLOW, AGENT], dsl_fields: [workflowKey, workflowName, input, output, tools], runtime_context: [callee_contract, delegated_identity]}
+  - {rule_ids: [FLOW-012], node_types: [AGENT], dsl_fields: [agentMode, prompt, tools, modelConfig, toolChoiceOnly], runtime_context: [kill_switch, runtime_goal_lock]}
+  - {rule_ids: [FLOW-013], node_types: ["*"], dsl_fields: [nodes, edges, id], runtime_context: [deployment_entrypoints]}
+  - {rule_ids: [FLOW-014], node_types: [JUDGE], dsl_fields: [conditionList, handleId, sourceIndex, sourceHandle], runtime_context: []}
+  - {rule_ids: [FLOW-015], node_types: [HEAD, TEMPLATE, INTERMEDIATE_OUTPUT], dsl_fields: [historyContextConfig, historyMsgVariables, isHistoryJsonInput, isHistoryJsonOutput], runtime_context: [session_isolation, retention_policy]}
+  - {rule_ids: [FLOW-016], node_types: [LOOP, LOOP_START, LOOP_OUTPUT], dsl_fields: [loopInput, nodes, edges, output, paramList], runtime_context: []}
+  - {rule_ids: [IN-001, IN-002, IN-003, IN-005], node_types: [HEAD], dsl_fields: [paramType, paramList], runtime_context: [data_classification]}
+  - {rule_ids: [IN-004], node_types: [HEAD, MODEL, AGENT], dsl_fields: [paramList, params, prompt], runtime_context: []}
+  - {rule_ids: [LLM-001, LLM-002], node_types: [MODEL, AGENT], dsl_fields: [prompt, params, model], runtime_context: []}
+  - {rule_ids: [LLM-003], node_types: [MODEL, AGENT], dsl_fields: [output, outputType, outputFormat], runtime_context: []}
+  - {rule_ids: [LLM-004, LLM-005], node_types: [MODEL, AGENT], dsl_fields: [modelConfig, agentMode], runtime_context: [platform_timeout, fallback_policy]}
+  - {rule_ids: [LLM-006], node_types: [MODEL, AGENT, JUDGE, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [output, outputFormat, conditionList, edges, sourceIndex], runtime_context: [business_authorization_policy]}
+  - {rule_ids: [LLM-007], node_types: [MODEL, AGENT], dsl_fields: [apiBase, model], runtime_context: [trusted_tls_terminator, model_endpoint_allowlist, egress_policy]}
+  - {rule_ids: [TOOL-001, TOOL-002, TOOL-003, TOOL-005, TOOL-006, TOOL-007, TOOL-008, TOOL-010], node_types: [AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW, CODE], dsl_fields: [tools, pluginKey, toolKey, mcpServerKey, workflowKey, urlMethod, body, query, header, input, output, auth, code], runtime_context: [registry_metadata, iam, egress_policy]}
+  - {rule_ids: [TOOL-004], node_types: [CODE], dsl_fields: [language, code, paramList], runtime_context: [sandbox_policy]}
+  - {rule_ids: [TOOL-009], node_types: [MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [output, tools, edges], runtime_context: [tool_output_validation]}
+  - {rule_ids: [TOOL-011], node_types: [CODE], dsl_fields: [language, code], runtime_context: [language_parser, sandbox_policy]}
+  - {rule_ids: [TOOL-012], node_types: [AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [auth, header, body, query, tools], runtime_context: [credential_injection_policy]}
+  - {rule_ids: [OUT-001, OUT-002, OUT-004], node_types: [TEMPLATE, INTERMEDIATE_OUTPUT], dsl_fields: [output, outputType, isJsonOutput, historyMsgVariables], runtime_context: [renderer_policy]}
+  - {rule_ids: [OUT-003], node_types: [INTERMEDIATE_OUTPUT], dsl_fields: [historyMsgStr, historyMsgVariables], runtime_context: [audience_policy]}
+  - {rule_ids: [OUT-005], node_types: [TEMPLATE, NEW_KNOWLEDGE], dsl_fields: [output, serviceConfig], runtime_context: []}
+  - {rule_ids: [OUT-006], node_types: [TEMPLATE, INTERMEDIATE_OUTPUT, MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [output, outputType, outputFormat, isJsonOutput], runtime_context: []}
+  - {rule_ids: [KB-001, KB-002, KB-003, KB-004, KB-005], node_types: [NEW_KNOWLEDGE, AGENT], dsl_fields: [params, serviceConfig, recallToolConfig, recallTools, knlToolList], runtime_context: [knowledge_acl, tenant_filter, content_provenance]}
+  - {rule_ids: [KB-006], node_types: [NEW_KNOWLEDGE, AGENT], dsl_fields: [recallToolConfig, recallTools, knlToolList, serviceConfig], runtime_context: []}

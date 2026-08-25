@@ -1,0 +1,6 @@
+interface:
+  display_name: "Agent JSON Workflow Security Scan"
+  short_description: "静态扫描内部 JSON Agent 工作流的安全风险"
+  default_prompt: "Use $agent-json-workflow-security-scan to assess this internal JSON workflow and generate an auditable static security report."
+policy:
+  allow_implicit_invocation: true

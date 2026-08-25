@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:internal-json-workflow-samples:1.0.0",
+  "type": "object",
+  "required": ["confirmed_by_user", "confirmed_dsl_sha256", "samples"],
+  "properties": {
+    "confirmed_by_user": {"const": true},
+    "confirmed_dsl_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "samples": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["input"],
+        "properties": {
+          "sample_id": {"type": "string"},
+          "input": {"type": "object", "minProperties": 1},
+          "expected_business_intent": {"type": "string"},
+          "expected_security_invariants": {"type": "array", "items": {"type": "string"}},
+          "forbidden_effects": {"type": "array", "items": {"type": "string"}}
+        },
+        "anyOf": [{"required": ["expected_business_intent"]}, {"required": ["expected_security_invariants"]}]
+      }
+    }
+  }
+}

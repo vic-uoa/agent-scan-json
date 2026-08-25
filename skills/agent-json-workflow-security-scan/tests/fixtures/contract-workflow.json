@@ -1,0 +1,23 @@
+{
+  "id": "contract-workflow",
+  "nodes": [
+    {"id": "systemInput", "type": "HEAD", "data": {"type": "HEAD", "paramType": "json"}},
+    {"id": "AGENT-a", "type": "AGENT", "data": {"type": "AGENT", "model": "model", "prompt": "fixed goal", "outputName": "agentOut", "outputType": "Object", "output": [{"name": "output", "type": "String"}], "modelConfig": {"maxNewToken": 1000}, "tools": [{"key": "mcp-a", "type": "mcp", "versionCount": 1, "auth": [], "toolList": [{"key": "write", "type": "mcp", "toolParamConfig": {"method": "POST", "body": [{"name": "projectId", "disabled": false, "isRequired": true, "canAgentSee": true}]}}]}], "knlToolList": [{"knlName": "Knowledge", "knlList": [{"knowledgeCode": "k1", "reCallNum": 3}]}]}},
+    {"id": "AI-p", "type": "AI_PLUGIN", "data": {"type": "AI_PLUGIN", "pluginKey": "p", "toolKey": "t", "urlMethod": "POST", "body": [], "outputName": "aiOut", "output": [{"name": "result", "type": "String"}]}},
+    {"id": "API-p", "type": "API_PLUGIN", "data": {"type": "API_PLUGIN", "pluginKey": "p2", "urlMethod": "GET", "query": [], "outputName": "apiOut"}},
+    {"id": "MCP-p", "type": "MCP", "data": {"type": "MCP", "mcpServerKey": "m", "toolKey": "t", "auth": [], "urlMethod": "POST", "body": [], "outputName": "mcpOut"}},
+    {"id": "WORKFLOW-p", "type": "WORKFLOW", "data": {"type": "WORKFLOW", "workflowKey": "w", "input": [], "output": [{"name": "out", "type": "String"}], "outputName": "workflowOut"}},
+    {"id": "KNOW-p", "type": "NEW_KNOWLEDGE", "data": {"type": "NEW_KNOWLEDGE", "outputName": "docs", "serviceConfig": {"recallCount": 3, "sortScore": 0.5, "whetherKnlSource": true}, "recallToolConfig": [{"knowledgeCode": "k", "reCallNum": "3"}]}},
+    {"id": "MODEL-p", "type": "MODEL", "data": {"type": "MODEL", "model": "m", "prompt": "fixed", "outputName": "modelOut", "outputType": "String", "modelConfig": {"maxNewToken": 100}, "fallback": "safe"}},
+    {"id": "JUDGE-p", "type": "JUDGE", "data": {"type": "JUDGE", "conditionList": [{"handleId": 0, "subConditions": [{"name": "modelOut", "condition": "EQ", "value": "ok", "variableType": "REFERENCE"}]}]}},
+    {"id": "CODE-safe", "type": "CODE", "data": {"type": "CODE", "language": "python", "code": "def handler(params):\n    return {'name': params.get('name')}\n", "outputName": "codeOut"}},
+    {"id": "INTER-p", "type": "INTERMEDIATE_OUTPUT", "data": {"type": "INTERMEDIATE_OUTPUT", "outputType": "Object"}},
+    {"id": "LOOP-p", "type": "LOOP", "data": {"type": "LOOP", "loopInput": [], "nodes": [{"id": "LOOP-start", "type": "LOOP_START", "data": {"type": "LOOP_START"}}, {"id": "LOOP-model", "type": "MODEL", "data": {"type": "MODEL", "params": [{"name": "question", "variable": "loopStart", "variableType": "REFERENCE"}], "prompt": "${question}", "outputName": "loopModelOut", "outputType": "String"}}, {"id": "LOOP-output", "type": "LOOP_OUTPUT", "data": {"type": "LOOP_OUTPUT"}}], "edges": [{"id": "le1", "source": "LOOP-start", "target": "LOOP-model"}, {"id": "le2", "source": "LOOP-model", "target": "LOOP-output"}]}},
+    {"id": "TEMPLATE-system", "type": "TEMPLATE", "data": {"type": "TEMPLATE", "outputType": "Object", "isJsonOutput": true, "output": [{"name": "result", "variable": "aiOut", "variableType": "REFERENCE"}]}}
+  ],
+  "edges": [
+    {"id": "e1", "source": "systemInput", "target": "AGENT-a"},
+    {"id": "e2", "source": "systemInput", "target": "AI-p"},
+    {"id": "e3", "source": "AI-p", "target": "TEMPLATE-system"}
+  ]
+}

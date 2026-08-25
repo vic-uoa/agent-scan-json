@@ -1,0 +1,16 @@
+{
+  "id": "risky-workflow",
+  "nodes": [
+    {"id": "systemInput", "type": "HEAD", "data": {"type": "HEAD", "label": "Start", "paramType": "json", "paramList": [{"name": "question", "type": "String", "required": true}]}},
+    {"id": "NEW_KNOWLEDGE-rag", "type": "NEW_KNOWLEDGE", "data": {"type": "NEW_KNOWLEDGE", "label": "RAG", "params": [{"name": "query", "variable": "systemInput.question", "variableType": "REFERENCE"}], "outputName": "docs", "outputType": "Array<String>", "serviceConfig": {"whetherKnlSource": false}, "recallToolConfig": [{"knowledgeCode": "internal", "searchStrategy": "MIX"}]}},
+    {"id": "MODEL-risk", "type": "MODEL", "data": {"type": "MODEL", "label": "Free text model", "model": "model", "params": [{"name": "question", "variable": "systemInput.question", "variableType": "REFERENCE"}, {"name": "docs", "variable": "docs", "variableType": "REFERENCE"}], "prompt": "Context: ${docs}\nQuestion: ${question}", "outputName": "decision", "outputType": "String", "outputFormat": "text", "modelConfig": {"maxNewToken": 4096}}},
+    {"id": "MCP-write", "type": "MCP", "data": {"type": "MCP", "label": "Project updater", "mcpServerKey": "server", "toolKey": "update", "auth": [], "urlMethod": "POST", "body": [{"name": "ROOT.projectId", "variable": "decision", "required": true, "variableType": "REFERENCE"}], "outputName": "toolResult"}},
+    {"id": "TEMPLATE-system", "type": "TEMPLATE", "data": {"type": "TEMPLATE", "label": "End", "outputType": "Object", "output": [{"name": "result", "variable": "toolResult", "variableType": "REFERENCE"}]}}
+  ],
+  "edges": [
+    {"id": "e1", "source": "systemInput", "target": "NEW_KNOWLEDGE-rag", "sourceIndex": 0},
+    {"id": "e2", "source": "NEW_KNOWLEDGE-rag", "target": "MODEL-risk", "sourceIndex": 0},
+    {"id": "e3", "source": "MODEL-risk", "target": "MCP-write", "sourceIndex": 0},
+    {"id": "e4", "source": "MCP-write", "target": "TEMPLATE-system", "sourceIndex": 0}
+  ]
+}

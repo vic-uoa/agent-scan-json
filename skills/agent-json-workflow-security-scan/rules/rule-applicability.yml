@@ -1,0 +1,73 @@
+schema_version: 1.0.0
+policies:
+  - name: deterministic_integrity
+    rule_ids: [FLOW-001, FLOW-003, FLOW-013, FLOW-014, FLOW-016, IN-001, IN-003, LLM-002, TOOL-004, TOOL-011, TOOL-012, OUT-006, KB-001, KB-006]
+    path_requirement: none
+    impact_floor: local
+    absence_handling: never_confirm_from_absence
+    default_report_group: risk
+    exclusions: [unreachable_cross_node_path, placeholder_secret, platform_valid_ordinal_handle_mapping]
+
+  - name: coverage_integrity
+    rule_ids: [FLOW-002, TOOL-001]
+    path_requirement: none
+    impact_floor: local
+    absence_handling: coverage_gap
+    default_report_group: coverage_gap
+    exclusions: [known_node_contract, registered_tool_capability]
+
+  - name: untrusted_to_consequence
+    rule_ids: [FLOW-004, FLOW-005, FLOW-006, FLOW-008, FLOW-009, LLM-003, LLM-006, TOOL-002, TOOL-003, TOOL-009, OUT-002, KB-003]
+    path_requirement: typed_data_or_control_path
+    impact_floor: user_visible_or_external
+    absence_handling: not_applicable_without_path
+    default_report_group: risk
+    exclusions: [deterministic_gate_on_all_paths, structured_contract, fixed_target, trusted_content_boundary, intended_authorized_recipient]
+
+  - name: agent_and_side_effect_governance
+    rule_ids: [FLOW-010, FLOW-012, TOOL-010]
+    path_requirement: effectful_capability_path
+    impact_floor: effectful
+    absence_handling: not_applicable_without_effect
+    default_report_group: risk
+    exclusions: [read_only_capability, deterministic_action_gate, fail_closed_compensation]
+
+  - name: runtime_assurance_after_relevance
+    rule_ids: [FLOW-007, FLOW-011, FLOW-015, IN-005, LLM-004, LLM-005, TOOL-005, TOOL-006, TOOL-007, TOOL-008, OUT-003, OUT-004, KB-002, KB-005]
+    path_requirement: relevant_capability_or_consequential_path
+    impact_floor: contextual
+    absence_handling: coverage_gap_only_after_applicability
+    default_report_group: coverage_gap
+    exclusions: [ordinary_read_only_path, fixed_single_dataset, human_display_only, downstream_contract_present, runtime_control_not_required]
+
+  - name: instruction_boundary
+    rule_ids: [IN-004, LLM-001]
+    path_requirement: untrusted_input_bound_to_prompt
+    impact_floor: user_visible
+    absence_handling: observed_then_dynamic_validation
+    default_report_group: risk
+    exclusions: [explicit_instruction_data_boundary, trusted_fixed_data]
+
+  - name: boundary_and_contract_hardening
+    rule_ids: [IN-002, OUT-001, KB-004]
+    path_requirement: direct_binding_or_declared_contract
+    impact_floor: user_visible
+    absence_handling: observed_or_hardening
+    default_report_group: hardening
+    exclusions: [explicit_instruction_data_boundary, bounded_input, structured_contract, citation_not_required]
+
+  - name: endpoint_posture
+    rule_ids: [LLM-007]
+    path_requirement: configured_endpoint
+    impact_floor: posture
+    absence_handling: observed_then_runtime_context
+    default_report_group: posture
+    exclusions: [https_endpoint, verified_trusted_tls_terminator, fixed_allowed_endpoint]
+
+  - name: explicit_output_requirement
+    rule_ids: [OUT-005]
+    path_requirement: knowledge_to_citation_required_output
+    impact_floor: user_visible
+    absence_handling: not_applicable_without_declared_requirement
+    default_report_group: risk
+    exclusions: [citation_not_required, source_metadata_propagated]

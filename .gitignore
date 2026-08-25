@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local scan and validation artifacts may contain workflow metadata.
+build/
+outputs/
