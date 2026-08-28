@@ -1,7 +1,7 @@
 schema_version: 1.0.0
 policies:
   - name: deterministic_integrity
-    rule_ids: [FLOW-001, FLOW-003, FLOW-013, FLOW-014, FLOW-016, IN-001, IN-003, LLM-002, TOOL-004, TOOL-011, TOOL-012, OUT-006, KB-001, KB-006]
+    rule_ids: [FLOW-001, FLOW-003, FLOW-013, FLOW-014, FLOW-016, FLOW-017, IN-001, IN-003, LLM-002, TOOL-004, TOOL-011, TOOL-012, TOOL-013, OUT-006, KB-001, KB-006]
     path_requirement: none
     impact_floor: local
     absence_handling: never_confirm_from_absence

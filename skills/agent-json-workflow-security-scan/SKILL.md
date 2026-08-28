@@ -11,7 +11,7 @@ description: 对内部 JSON 工作流 DSL 做确定性静态安全扫描，覆�
 2. 解析结构并计算 SHA-256。解析器接受直接 `{id,nodes,edges}` 图对象，也接受内部 API 返回中的 `body.body` 图对象；未知节点保留拓扑并记录覆盖缺口。
 3. `assessment` 模式下，展示并请用户确认至少一个代表性业务输入、业务意图、安全不变量和禁止副作用。用户确认后才可把 `confirmed_by_user` 写为 `true`；`confirmed_dsl_sha256` 由扫描器生成并校验，不是用户确认项。
 4. 运行确定性规则与输入簇生成。模型不得创建、删除、升级、降级或抑制 Finding。需要额外语义覆盖时，可把模型生成的建议文件通过 `--model-advisory` 导入；只接受通过 Schema、种子、节点、规则和 Finding 引用校验的惰性测试、复核问题与非权威措辞。
-5. 先查看 `08-findings.json` 和 `11-quality-gate.json`，再向用户解释 `report.md` 与 `attack-surface.md`。
+5. 先查看 `08-findings.json` 和 `11-quality-gate.json`，分别确认风险门禁和扫描完整性，再向用户解释 `report.md` 与 `attack-surface.md`。
 
 ```powershell
 python scripts/scan_workflow.py scan `
@@ -42,6 +42,9 @@ python scripts/scan_workflow.py scan `
 - 规则必须同时满足适用能力、可达路径、缺失的确定性控制和合理影响；不得对每个同类节点无条件复制运行时缺口。固定单知识库、只读 RAG、纯文本模型链和无副作用 CODE 转换默认不因运行时事实不可见而形成风险项。
 - 数据引用路径、可执行控制路径和混合可达路径必须分开使用；参数污染只能由数据路径证明，授权绕过只能由控制路径证明。完整适用性模型见 [references/applicability-model.md](references/applicability-model.md)。
 - `sourceIndex` 可以是分支序号，`sourceHandle` 可以编码真实 `handleId`；两者能够通过条件列表序号映射时不得报告路由不一致。
+- `outputName` 是节点输出别名；`alias.field.subfield` 必须按别名解析到生产者并沿输出 Schema 检查类型，不能只按节点 ID 解析。
+- 整对象引用必须继续审查嵌套字段语义，例如对象内的 `image_url`、`callback`、认证材料或资源 ID；不能因消费者只绑定父对象而丢失敏感参数路径。
+- Python `CODE` 节点可对明确返回表达式做保守类型推断；只在推断结果与 `outputType` 明确冲突时形成契约观察，无法推断不得猜测。
 - 未执行测试用例保持 `NOT_EXECUTED`，不得改变 Finding、严重度或质量门禁。
 - 模型可以补充输入变化、覆盖缺口复核问题和报告措辞；不能提供权威资产、攻击路径、Finding、状态、严重度、置信度或门禁。模型不可用或建议被拒绝时，确定性结果不变。
 
@@ -54,11 +57,11 @@ python scripts/scan_workflow.py scan `
 - `COVERAGE_GAP`：关键事实不在 DSL 中。
 - `MITIGATED`：风险路径存在，但被必经确定性控制阻断。
 
-报告把记录分为四组：`risk` 安全风险、`posture` JSON 原生配置观察、`hardening` 加固建议和 `coverage_gap` 运行时证据缺口。只有 `risk` 计入安全风险数量并驱动门禁；其余各组必须单独计数，不能包装成漏洞。
+报告把记录分为四组：`risk` 安全风险、`posture` JSON 原生配置观察、`hardening` 加固建议和 `coverage_gap` 覆盖缺口。只有 `risk` 计入安全风险数量并驱动门禁；其余各组必须单独计数，不能包装成漏洞。覆盖缺口还要拆成扫描器覆盖问题（未知节点、字段或引用解析失败）与运行时待补证（IAM、网络、沙盒等 JSON 外事实）。
 
 人工报告必须中文优先：`report.md` 与 `attack-surface.md` 的标题、栏目、字段标签、严重度、证据状态、门禁结果、控制域和缺失上下文使用中文；规则编号、节点 ID、JSON/MCP/TLS 等技术标识按原值保留。机器产物（尤其 `report.json`、`08-findings.json` 和 `11-quality-gate.json`）继续使用稳定的英文字段名与枚举值，禁止为了展示中文而改变接口契约。
 
-默认门禁：未豁免的 `risk + CONFIRMED + CRITICAL/HIGH` 时 `FAIL`；无阻断项但存在其他 `risk` 时 `REVIEW`；只有 posture、hardening 或 coverage gap 时不据此宣称存在漏洞。
+默认风险门禁：未豁免的 `risk + CONFIRMED + CRITICAL/HIGH` 时 `FAIL`；无阻断项但存在其他 `risk` 时 `REVIEW`；只有 posture、hardening 或 coverage gap 时不据此宣称存在漏洞。扫描完整性独立输出：解析器/字段/引用覆盖有缺口时为 `INCOMPLETE`，仅缺运行时事实时为 `RUNTIME_EVIDENCE_REQUIRED`，否则为 `COMPLETE`。
 
 ## 资源路由
 

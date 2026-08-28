@@ -40,7 +40,7 @@ class RuleApplicabilityMatrixTests(unittest.TestCase):
     def test_every_rule_has_exactly_one_applicability_policy(self) -> None:
         catalog = RuleCatalog(self.rules)
         self.assertEqual(set(catalog.rules), set(catalog.applicability))
-        self.assertEqual(len(catalog.rules), 52)
+        self.assertEqual(len(catalog.rules), 54)
 
     def test_free_text_model_to_effectful_tool_stays_high_signal(self) -> None:
         in_ref = VariableRef("start", "question", "model", "/nodes/1/prompt", "prompt")

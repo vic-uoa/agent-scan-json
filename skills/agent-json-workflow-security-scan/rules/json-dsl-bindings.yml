@@ -14,6 +14,7 @@ bindings:
   - {rule_ids: [FLOW-014], node_types: [JUDGE], dsl_fields: [conditionList, handleId, sourceIndex, sourceHandle], runtime_context: []}
   - {rule_ids: [FLOW-015], node_types: [HEAD, TEMPLATE, INTERMEDIATE_OUTPUT], dsl_fields: [historyContextConfig, historyMsgVariables, isHistoryJsonInput, isHistoryJsonOutput], runtime_context: [session_isolation, retention_policy]}
   - {rule_ids: [FLOW-016], node_types: [LOOP, LOOP_START, LOOP_OUTPUT], dsl_fields: [loopInput, nodes, edges, output, paramList], runtime_context: []}
+  - {rule_ids: [FLOW-017], node_types: [HEAD, MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW, CODE, JUDGE, LOOP, LOOP_START, LOOP_OUTPUT, TEMPLATE, INTERMEDIATE_OUTPUT], dsl_fields: [outputName, outputType, paramList, params, input, output, body, query, header, conditionList, loopInput], runtime_context: []}
   - {rule_ids: [IN-001, IN-002, IN-003, IN-005], node_types: [HEAD], dsl_fields: [paramType, paramList], runtime_context: [data_classification]}
   - {rule_ids: [IN-004], node_types: [HEAD, MODEL, AGENT], dsl_fields: [paramList, params, prompt], runtime_context: []}
   - {rule_ids: [LLM-001, LLM-002], node_types: [MODEL, AGENT], dsl_fields: [prompt, params, model], runtime_context: []}
@@ -26,6 +27,7 @@ bindings:
   - {rule_ids: [TOOL-009], node_types: [MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [output, tools, edges], runtime_context: [tool_output_validation]}
   - {rule_ids: [TOOL-011], node_types: [CODE], dsl_fields: [language, code], runtime_context: [language_parser, sandbox_policy]}
   - {rule_ids: [TOOL-012], node_types: [AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [auth, header, body, query, tools], runtime_context: [credential_injection_policy]}
+  - {rule_ids: [TOOL-013], node_types: [CODE], dsl_fields: [language, code, outputType, output], runtime_context: []}
   - {rule_ids: [OUT-001, OUT-002, OUT-004], node_types: [TEMPLATE, INTERMEDIATE_OUTPUT], dsl_fields: [output, outputType, isJsonOutput, historyMsgVariables], runtime_context: [renderer_policy]}
   - {rule_ids: [OUT-003], node_types: [INTERMEDIATE_OUTPUT], dsl_fields: [historyMsgStr, historyMsgVariables], runtime_context: [audience_policy]}
   - {rule_ids: [OUT-005], node_types: [TEMPLATE, NEW_KNOWLEDGE], dsl_fields: [output, serviceConfig], runtime_context: []}

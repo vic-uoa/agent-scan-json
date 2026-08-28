@@ -94,8 +94,24 @@ def quality_gate(findings: list[Finding], waiver_audit: dict[str, Any]) -> dict[
     blockers = [item.id for item in risk_findings if not item.waived and item.status == "CONFIRMED" and item.severity in {"CRITICAL", "HIGH"}]
     reviews = [item.id for item in risk_findings if not item.waived and item.status in {"CONFIRMED", "OBSERVED", "PROBABLE", "CANDIDATE"}]
     coverage_gaps = [item.id for item in findings if not item.waived and item.report_group == "coverage_gap"]
+    scanner_gap_ids = [
+        item.id for item in findings
+        if not item.waived and item.report_group == "coverage_gap" and item.rule_id in {"FLOW-002", "FLOW-003"}
+    ]
+    runtime_gap_ids = [item for item in coverage_gaps if item not in scanner_gap_ids]
     result = "FAIL" if blockers else "REVIEW" if reviews else "PASS"
-    return {"result": result, "blocker_ids": blockers, "review_ids": reviews, "coverage_gap_ids": coverage_gaps, "waiver_audit": waiver_audit}
+    completeness_result = "INCOMPLETE" if scanner_gap_ids else "RUNTIME_EVIDENCE_REQUIRED" if runtime_gap_ids else "COMPLETE"
+    return {
+        "result": result,
+        "risk_gate_result": result,
+        "completeness_result": completeness_result,
+        "blocker_ids": blockers,
+        "review_ids": reviews,
+        "coverage_gap_ids": coverage_gaps,
+        "scanner_gap_ids": scanner_gap_ids,
+        "runtime_gap_ids": runtime_gap_ids,
+        "waiver_audit": waiver_audit,
+    }
 
 
 def verify(findings: list[Finding], facts: list[Any], candidates: dict[str, Any], tests: dict[str, Any], ir: WorkflowIR) -> dict[str, Any]:
@@ -170,4 +186,16 @@ def run_scan(*, dsl_path: Path, output_dir: Path, rules_path: Path, samples_path
     (output_dir / "report.md").write_text(report_markdown(to_jsonable(report)), encoding="utf-8")
     write_index(output_dir, scan_id, ir.workflow_hash)
     risk_count = sum(item.report_group == "risk" for item in findings)
-    return {"scan_id": scan_id, "workflow_hash": ir.workflow_hash, "quality_gate": gate["result"], "finding_count": risk_count, "total_record_count": len(findings), "output_dir": str(output_dir), "exit_code": 1 if gate["result"] == "FAIL" else 0}
+    return {
+        "scan_id": scan_id,
+        "workflow_hash": ir.workflow_hash,
+        "quality_gate": gate["result"],
+        "risk_gate": gate["risk_gate_result"],
+        "completeness_result": gate["completeness_result"],
+        "scanner_gap_count": len(gate["scanner_gap_ids"]),
+        "runtime_gap_count": len(gate["runtime_gap_ids"]),
+        "finding_count": risk_count,
+        "total_record_count": len(findings),
+        "output_dir": str(output_dir),
+        "exit_code": 1 if gate["result"] == "FAIL" else 0,
+    }

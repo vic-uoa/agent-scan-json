@@ -304,6 +304,33 @@ class SecurityEngine:
         self._impact_cache[node.id] = context
         return context
 
+    def _reference_field_names(self, ref: Any) -> set[str]:
+        names = {str(ref.consumer_field or "").lower(), str(ref.variable_name or "").lower()}
+        producer = self.graph.nodes.get(ref.producer_node_id)
+        if not producer or producer.type != NodeType.INPUT.value:
+            return names
+        root = str(ref.variable_name or "").split(".", 1)[0]
+        variables = producer.config.get("paramList")
+        if not isinstance(variables, list):
+            return names
+        entries = variables if not root else [
+            item for item in variables
+            if isinstance(item, dict) and str(item.get("name") or item.get("variable") or "") == root
+        ]
+        if not entries:
+            return names
+        stack = list(entries)
+        while stack:
+            current = stack.pop()
+            if not isinstance(current, dict):
+                continue
+            names.add(str(current.get("name") or current.get("variable") or "").lower())
+            for key in ("sub", "children"):
+                value = current.get(key)
+                if isinstance(value, list):
+                    stack.extend(value)
+        return names
+
     def untrusted_refs(self, node: Node, field_words: Iterable[str] = ()) -> list[Any]:
         words = tuple(word.lower() for word in field_words)
         refs = []
@@ -311,13 +338,13 @@ class SecurityEngine:
             producer = self.graph.nodes.get(ref.producer_node_id)
             if not producer or producer.type not in UNTRUSTED_SOURCE_TYPES:
                 continue
-            field = ref.consumer_field.lower()
-            if words and not any(word in field for word in words):
+            fields = self._reference_field_names(ref)
+            if words and not any(word in field for word in words for field in fields):
                 continue
             refs.append(ref)
         return refs
 
-    def emit(self, rule_id: str, node_ids: list[str], message: str, *, status: Status, severity: Severity | None = None, confidence: float = 1.0, evidence: list[str] | None = None, missing_context: list[str] | None = None, report_group: str | None = None) -> None:
+    def emit(self, rule_id: str, node_ids: list[str], message: str, *, status: Status, severity: Severity | None = None, confidence: float = 1.0, evidence: list[str] | None = None, missing_context: list[str] | None = None, report_group: str | None = None, remediation: list[str] | None = None) -> None:
         key = (rule_id, tuple(node_ids), message)
         if key in self._dedupe:
             return
@@ -337,7 +364,7 @@ class SecurityEngine:
             evidence_refs=[fact_id],
             dsl_locations=locations,
             message=message,
-            remediation=REMEDIATIONS.get(str(rule["control_domain"]), ["补充确定性控制并重新验证。"]),
+            remediation=remediation or REMEDIATIONS.get(str(rule["control_domain"]), ["补充确定性控制并重新验证。"]),
             standards=[str(item) for item in rule.get("standards", [])],
             missing_context=missing_context or [],
             dynamic_test=rule.get("dynamic_test"),
@@ -410,6 +437,26 @@ class SecurityEngine:
             elif reason in {"ambiguous_symbol", "unresolved_symbol", "required_reference_unbound", "condition_reference_unbound", "unresolved_prompt_parameter"}:
                 status = Status.CONFIRMED if reason == "required_reference_unbound" else Status.COVERAGE_GAP
                 self.emit("FLOW-003", node_ids, f"引用问题：{reason}（{gap.get('symbol') or gap.get('field') or 'unknown'}）。", status=status, evidence=evidence)
+        for mismatch in self.ir.raw_metadata.get("reference_type_mismatches", []):
+            producer_id = str(mismatch.get("producer_node_id") or "")
+            consumer_id = str(mismatch.get("consumer_node_id") or "")
+            if producer_id not in self.graph.nodes or consumer_id not in self.graph.nodes:
+                continue
+            consumer = self.graph.nodes[consumer_id]
+            consequential = self.impact(consumer).consequential
+            path = str(mismatch.get("variable_path") or self.graph.nodes[producer_id].config.get("outputName") or "输出")
+            message = (
+                f"引用 {path} 的生产者类型为 {mismatch.get('producer_type')}，"
+                f"消费者字段 {mismatch.get('consumer_field') or 'input'} 声明为 {mismatch.get('consumer_type')}。"
+            )
+            self.emit(
+                "FLOW-017", [producer_id, consumer_id], message,
+                status=Status.CONFIRMED,
+                severity=Severity.HIGH if consequential else Severity.MEDIUM,
+                evidence=[str(mismatch.get("pointer") or consumer.json_pointer)],
+                report_group="risk" if consequential else "posture",
+                remediation=[f"将 {consumer.title} 的输入类型调整为与上游一致，或在进入该节点前增加显式且可验证的类型转换。"],
+            )
         starts = [node.id for node in self.ir.nodes if node.type in {NodeType.INPUT.value, NodeType.STRUCTURAL.value} and node.original_type != "LOOP_OUTPUT"]
         ends = [node.id for node in self.ir.nodes if node.type == NodeType.OUTPUT.value or node.original_type == "LOOP_OUTPUT"]
         from_start = self.graph.reachable(starts)
@@ -488,6 +535,22 @@ class SecurityEngine:
                 self.emit("TOOL-011", [node.id], f"代码语言 {node.config.get('language')} 尚无确定性语法适配器。", status=Status.COVERAGE_GAP, missing_context=["language_specific_parser"])
             if not node.config.get("output") and impact.consequential:
                 self.emit("TOOL-006", [node.id], "CODE 节点未导出字段级输出 Schema；固定代码本身不因此被视为注入。", status=Status.COVERAGE_GAP, missing_context=["code_output_contract"])
+            return_contract = next(
+                (item for item in self.ir.raw_metadata.get("code_return_mismatches", []) if item.get("node_id") == node.id),
+                None,
+            )
+            if return_contract:
+                consequential = impact.consequential
+                inferred = ", ".join(return_contract.get("inferred_types", [])) or "未知"
+                self.emit(
+                    "TOOL-013", [node.id],
+                    f"Python 返回类型推断为 {inferred}，但节点 outputType 声明为 {return_contract.get('declared_type')}。",
+                    status=Status.CONFIRMED,
+                    severity=Severity.HIGH if consequential else Severity.MEDIUM,
+                    evidence=[str(return_contract.get("pointer") or node.json_pointer)],
+                    report_group="risk" if consequential else "posture",
+                    remediation=[f"修正 {node.title} 的 outputType/字段 Schema，或让所有返回分支稳定返回声明类型；随后重新校验下游引用。"],
+                )
             return
         specs = node.tool_specs
         if not specs:
@@ -603,7 +666,15 @@ class SecurityEngine:
         if len(handles) != len(set(handles)):
             self.emit("FLOW-014", [node.id], "条件分支存在重复 handleId。", status=Status.CONFIRMED, severity=integrity_severity, report_group=integrity_group)
         if mismatches:
-            self.emit("FLOW-014", [node.id], f"条件边的 sourceIndex 与 sourceHandle 既不满足句柄值对应，也不满足分支序号对应：{mismatches}。", status=Status.OBSERVED, severity=Severity.LOW, missing_context=["platform_branch_routing_precedence"], report_group="posture")
+            self.emit(
+                "FLOW-014", [node.id],
+                f"条件边的 sourceIndex 与 sourceHandle 既不满足句柄值对应，也不满足分支序号对应：{mismatches}。",
+                status=Status.OBSERVED,
+                severity=Severity.LOW,
+                missing_context=["platform_branch_routing_precedence"],
+                report_group="posture",
+                remediation=["核对平台分支路由优先级，并让 sourceIndex 与 sourceHandle 通过同一个 handleId 或明确的分支序号映射表达。"],
+            )
         invalid_edges = [item for item in effective_handles if item not in allowed]
         if invalid_edges:
             self.emit("FLOW-014", [node.id], f"出边 sourceIndex 未对应任何条件或 ELSE：{sorted(set(invalid_edges), key=str)}。", status=Status.CONFIRMED, severity=integrity_severity, report_group=integrity_group)
@@ -778,7 +849,10 @@ class SecurityEngine:
             if len(members) > 1:
                 title = self.graph.nodes[anchor].title if anchor in self.graph.nodes else "Workflow"
                 primary.title = f"{title}：{domain}"
-                primary.message = f"同一责任节点和控制域聚合了 {len(members)} 个规则或路径实例。"
+                messages = list(dict.fromkeys(item.message.rstrip("。；;，, ") for item in members))
+                preview = "；".join(messages[:3])
+                suffix = f"；另有 {len(messages) - 3} 类证据见实例明细" if len(messages) > 3 else ""
+                primary.message = f"共 {len(members)} 个相关实例：{preview}{suffix}。"
             result.append(primary)
         return result
 

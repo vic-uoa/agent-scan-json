@@ -105,6 +105,100 @@ class ScannerTests(unittest.TestCase):
             future.write_text(json.dumps({"nodes": [{"id": "m", "type": "MODEL", "data": {"type": "MODEL", "futureSecurityMode": True}}], "edges": []}), encoding="utf-8")
             ir, _ = parse_workflow(future)
             self.assertIn("unmapped_node_field", {gap["reason"] for gap in ir.coverage_gaps})
+            result = run_scan(dsl_path=future, output_dir=Path(tmp) / "out", rules_path=self.rules, mode="structure-only")
+            self.assertEqual(result["completeness_result"], "INCOMPLETE")
+            self.assertGreater(result["scanner_gap_count"], 0)
+
+    def test_known_model_runtime_fields_are_mapped(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "known-fields.json"
+            workflow.write_text(json.dumps({"nodes": [{
+                "id": "m", "type": "MODEL", "data": {
+                    "type": "MODEL", "context": "session", "defaultOutput": "fallback",
+                    "ignoreException": False,
+                },
+            }], "edges": []}), encoding="utf-8")
+            ir, _ = parse_workflow(workflow)
+            unmapped = {gap.get("field") for gap in ir.coverage_gaps if gap["reason"] == "unmapped_node_field"}
+            self.assertFalse({"context", "defaultOutput", "ignoreException"} & unmapped)
+
+    def test_output_name_path_alias_resolves_and_type_mismatch_is_reported(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "alias-type.json"
+            workflow.write_text(json.dumps({
+                "nodes": [
+                    {"id": "model", "type": "MODEL", "data": {
+                        "type": "MODEL", "label": "图像模型", "outputName": "imgAI", "outputType": "Object",
+                        "output": [{"name": "content", "type": "Object", "sub": [
+                            {"name": "result", "type": "Object", "sub": [
+                                {"name": "choices", "type": "Array<String>"},
+                            ]},
+                        ]}],
+                    }},
+                    {"id": "out", "type": "TEMPLATE", "data": {
+                        "type": "TEMPLATE", "label": "结果", "outputType": "Object",
+                        "output": [{"name": "answer", "type": "String", "variableType": "REFERENCE", "variable": "imgAI.content.result.choices"}],
+                    }},
+                ],
+                "edges": [{"id": "e1", "source": "model", "target": "out"}],
+            }), encoding="utf-8")
+            ir, _ = parse_workflow(workflow)
+            self.assertFalse([gap for gap in ir.coverage_gaps if gap["reason"] == "unresolved_symbol"])
+            ref = ir.node_map()["out"].variable_refs[0]
+            self.assertEqual((ref.producer_node_id, ref.variable_name, ref.resolution), ("model", "content.result.choices", "symbol_path"))
+            self.assertEqual(len(ir.raw_metadata["reference_type_mismatches"]), 1)
+            _, findings, _ = execute_rules(ir, self.rules)
+            finding_rules = {rule for item in findings for rule in [item.rule_id, *item.related_rule_ids]}
+            self.assertIn("FLOW-017", finding_rules)
+
+    def test_python_return_type_is_checked_against_declared_output(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "code-return.json"
+            workflow.write_text(json.dumps({"nodes": [{
+                "id": "code", "type": "CODE", "data": {
+                    "type": "CODE", "label": "转换", "language": "python", "outputType": "String",
+                    "code": "def handler(params):\n    return {'ok': True}\n",
+                },
+            }], "edges": []}), encoding="utf-8")
+            ir, _ = parse_workflow(workflow)
+            self.assertEqual(ir.raw_metadata["code_return_mismatches"][0]["inferred_types"], ["OBJECT"])
+            _, findings, _ = execute_rules(ir, self.rules)
+            finding_rules = {rule for item in findings for rule in [item.rule_id, *item.related_rule_ids]}
+            self.assertIn("TOOL-013", finding_rules)
+
+    def test_code_local_param_lookup_is_not_guessed_as_global_symbol(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "local-param.json"
+            workflow.write_text(json.dumps({"nodes": [{
+                "id": "code", "type": "CODE", "data": {
+                    "type": "CODE", "language": "python",
+                    "code": "def handler(params):\n    return {'name': params.get('name')}\n",
+                },
+            }], "edges": []}), encoding="utf-8")
+            ir, _ = parse_workflow(workflow)
+            self.assertFalse([gap for gap in ir.coverage_gaps if gap["reason"] == "unresolved_symbol"])
+
+    def test_nested_url_field_in_whole_object_reference_reaches_ssrf_rule(self) -> None:
+        with TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "nested-url.json"
+            workflow.write_text(json.dumps({
+                "nodes": [
+                    {"id": "start", "type": "HEAD", "data": {
+                        "type": "HEAD", "outputName": "systemInput", "paramList": [{
+                            "name": "payload", "type": "Object", "sub": [{"name": "image_url", "type": "String"}],
+                        }],
+                    }},
+                    {"id": "plugin", "type": "AI_PLUGIN", "data": {
+                        "type": "AI_PLUGIN", "label": "图像抓取", "urlMethod": "POST", "pluginKey": "image-reader",
+                        "body": [{"name": "request", "type": "Object", "variableType": "REFERENCE", "variable": "systemInput.payload"}],
+                    }},
+                ],
+                "edges": [{"id": "e1", "source": "start", "target": "plugin"}],
+            }), encoding="utf-8")
+            ir, _ = parse_workflow(workflow)
+            _, findings, _ = execute_rules(ir, self.rules)
+            finding_rules = {rule for item in findings for rule in [item.rule_id, *item.related_rule_ids]}
+            self.assertIn("TOOL-003", finding_rules)
 
     def test_dangerous_code_calls_are_classified_by_primitive_family(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -119,6 +213,8 @@ class ScannerTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             result = run_scan(dsl_path=self.fixtures / "safe-workflow.json", output_dir=Path(tmp), rules_path=self.rules, mode="structure-only")
             self.assertEqual(result["quality_gate"], "PASS")
+            self.assertEqual(result["risk_gate"], "PASS")
+            self.assertEqual(result["completeness_result"], "COMPLETE")
             self.assertEqual(result["finding_count"], 0)
 
     def test_risky_scan_fails_and_preserves_raw_matches(self) -> None:
@@ -142,8 +238,9 @@ class ScannerTests(unittest.TestCase):
             report_json_data = json.loads((output / "report.json").read_text(encoding="utf-8"))
 
             for label in (
-                "# 智能体 JSON 工作流静态安全扫描报告", "发布门禁", "## 扫描覆盖情况",
-                "## 安全风险项", "证据状态", "控制域", "修复建议", "## 使用边界",
+                "# 智能体 JSON 工作流静态安全扫描报告", "## 一页结论", "风险门禁", "扫描完整性",
+                "## 扫描覆盖情况", "## 优先处理事项", "## 安全风险项", "业务节点",
+                "证据状态", "控制域", "证据位置", "修复建议", "## 使用边界",
             ):
                 self.assertIn(label, report_md)
             for old_label in (
@@ -161,6 +258,8 @@ class ScannerTests(unittest.TestCase):
             self.assertNotIn("structured_data_contract", report_md)
             machine_report = report_json_data["report"]
             self.assertIn(machine_report["summary"]["quality_gate"], {"PASS", "REVIEW", "FAIL"})
+            self.assertIn(machine_report["summary"]["completeness_result"], {"COMPLETE", "RUNTIME_EVIDENCE_REQUIRED", "INCOMPLETE"})
+            self.assertIn("node_labels", machine_report["workflow"])
             self.assertTrue(all(item["status"] in {"CONFIRMED", "OBSERVED", "PROBABLE", "CANDIDATE", "COVERAGE_GAP", "MITIGATED"} for item in machine_report["findings"]))
 
     def test_assessment_requires_hash_and_generates_cluster(self) -> None:

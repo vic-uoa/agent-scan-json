@@ -58,8 +58,8 @@ NODE_FIELD_CONTRACTS = {
     "HEAD": {"paramType"},
     "TEMPLATE": {"customTailOutputConfig", "historyJsonInputStr", "historyJsonOutputStr", "historyMsgStr", "historyMsgType", "historyMsgVariables", "inputHistoryMsgStr", "inputHistoryMsgType", "inputHistoryMsgVariables", "isCustomHistoryMsg", "isCustomTailJsonOutput", "isCustomTailOutput", "isHistoryJsonInput", "isHistoryJsonOutput", "isJsonOutput", "isStreamingOutput", "output"},
     "INTERMEDIATE_OUTPUT": {"historyMsgStr", "historyMsgType", "historyMsgVariables", "isCustomHistoryMsg"},
-    "MODEL": {"apiBase", "enableThinking", "fallback", "retry", "errorStrategy", "model", "modelConfig", "output", "outputFormat", "params", "prompt", "reasoningMode", "thinkingMode"},
-    "AGENT": {"agentMode", "enableThinking", "fallback", "retry", "errorStrategy", "knlToolList", "model", "modelConfig", "output", "outputFormat", "params", "prompt", "thinkingMode", "toolChoiceOnly", "tools"},
+    "MODEL": {"apiBase", "context", "defaultOutput", "enableThinking", "fallback", "ignoreException", "retry", "errorStrategy", "model", "modelConfig", "output", "outputFormat", "params", "prompt", "reasoningMode", "thinkingMode"},
+    "AGENT": {"agentMode", "context", "defaultOutput", "enableThinking", "fallback", "ignoreException", "retry", "errorStrategy", "knlToolList", "model", "modelConfig", "output", "outputFormat", "params", "prompt", "thinkingMode", "toolChoiceOnly", "tools"},
     "AI_PLUGIN": {"body", "header", "output", "path", "pluginKey", "pluginName", "query", "requireBodyContentType", "toolKey", "toolName", "urlMethod"},
     "API_PLUGIN": {"body", "header", "output", "path", "pluginKey", "pluginName", "query", "requireBodyContentType", "urlMethod"},
     "MCP": {"auth", "body", "header", "mcpServerKey", "mcpServerName", "name", "output", "query", "requireBodyContentType", "toolKey", "toolName", "urlMethod"},
@@ -67,9 +67,20 @@ NODE_FIELD_CONTRACTS = {
     "NEW_KNOWLEDGE": {"appName", "params", "recallToolConfig", "recallTools", "serviceCode", "serviceConfig"},
     "CODE": {"code", "input", "language", "output"},
     "JUDGE": {"conditionList"},
-    "LOOP": {"edges", "loopInput", "nodes", "output", "validateStatus"},
+    "LOOP": {"edges", "loopInput", "loopVariables", "nodes", "output", "validateStatus"},
     "LOOP_START": {"loopInput"},
-    "LOOP_OUTPUT": set(),
+    "LOOP_OUTPUT": {"customTailOutputConfig", "output", "resetLoopVariables"},
+}
+
+TYPE_ALIASES = {
+    "str": "STRING", "string": "STRING", "text": "STRING", "text-input": "STRING", "paragraph": "STRING",
+    "int": "INTEGER", "integer": "INTEGER", "long": "INTEGER",
+    "float": "NUMBER", "double": "NUMBER", "number": "NUMBER",
+    "bool": "BOOLEAN", "boolean": "BOOLEAN", "checkbox": "BOOLEAN",
+    "dict": "OBJECT", "map": "OBJECT", "json_object": "OBJECT", "object": "OBJECT",
+    "list": "ARRAY", "tuple": "ARRAY", "set": "ARRAY", "array": "ARRAY",
+    "array<object>": "ARRAY", "array<string>": "ARRAY", "array[number]": "ARRAY",
+    "json": "JSON", "any": "ANY", "unknown": "ANY",
 }
 
 
@@ -146,6 +157,151 @@ def _structured_output(config: dict[str, Any]) -> bool:
         or (str(config.get("outputType") or "").lower() in {"object", "array<object>"} and isinstance(output, list) and output)
         or config.get("isJsonOutput") is True
     )
+
+
+def _contract_type(value: Any) -> str | None:
+    raw = str(value or "").strip().lower().replace(" ", "")
+    if not raw:
+        return None
+    if raw.startswith("array[") or raw.startswith("array<") or raw.endswith("[]"):
+        return "ARRAY"
+    return TYPE_ALIASES.get(raw, raw.upper())
+
+
+def _compatible_types(producer: str | None, consumer: str | None) -> bool:
+    if not producer or not consumer or "ANY" in {producer, consumer}:
+        return True
+    if producer == consumer:
+        return True
+    if {producer, consumer} <= {"INTEGER", "NUMBER"}:
+        return True
+    if producer == "JSON" and consumer in {"JSON", "OBJECT", "ARRAY"}:
+        return True
+    if consumer == "JSON" and producer in {"OBJECT", "ARRAY"}:
+        return True
+    return False
+
+
+def _schema_entry(entries: Any, name: str) -> dict[str, Any] | None:
+    if not isinstance(entries, list):
+        return None
+    normalized = name.replace("[]", "")
+    return next(
+        (item for item in entries if isinstance(item, dict) and str(item.get("name") or item.get("variable") or "") == normalized),
+        None,
+    )
+
+
+def _schema_path_type(entries: Any, path: str) -> str | None:
+    parts = [part for part in path.split(".") if part]
+    current = entries
+    result: str | None = None
+    for index, part in enumerate(parts):
+        item = _schema_entry(current, part)
+        if not item:
+            return None
+        result = _contract_type(item.get("type") or item.get("valueType") or item.get("value_type"))
+        if index < len(parts) - 1:
+            current = item.get("sub") if isinstance(item.get("sub"), list) else item.get("children")
+    return result
+
+
+def _producer_reference_type(node: Node, variable_path: str) -> str | None:
+    if node.type == NodeType.INPUT.value:
+        return _schema_path_type(node.config.get("paramList"), variable_path)
+    if node.original_type == "LOOP_START":
+        return _schema_path_type(node.config.get("loopInput"), variable_path)
+    if variable_path:
+        nested = _schema_path_type(node.config.get("output"), variable_path)
+        if nested:
+            return nested
+    declared = _contract_type(node.config.get("outputType"))
+    if declared:
+        return declared
+    output = node.config.get("output")
+    if isinstance(output, list) and len(output) == 1 and isinstance(output[0], dict):
+        return _contract_type(output[0].get("type"))
+    return None
+
+
+def _expression_types(expression: ast.AST | None, assignments: dict[str, set[str]]) -> set[str]:
+    if expression is None:
+        return {"NULL"}
+    if isinstance(expression, ast.Dict):
+        return {"OBJECT"}
+    if isinstance(expression, (ast.List, ast.Tuple, ast.Set, ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+        return {"ARRAY"}
+    if isinstance(expression, ast.Constant):
+        if expression.value is None:
+            return {"NULL"}
+        if isinstance(expression.value, bool):
+            return {"BOOLEAN"}
+        if isinstance(expression.value, str):
+            return {"STRING"}
+        if isinstance(expression.value, int):
+            return {"INTEGER"}
+        if isinstance(expression.value, float):
+            return {"NUMBER"}
+    if isinstance(expression, ast.JoinedStr):
+        return {"STRING"}
+    if isinstance(expression, (ast.Compare, ast.BoolOp)):
+        return {"BOOLEAN"}
+    if isinstance(expression, ast.Name):
+        return set(assignments.get(expression.id, {"ANY"}))
+    if isinstance(expression, ast.IfExp):
+        return _expression_types(expression.body, assignments) | _expression_types(expression.orelse, assignments)
+    if isinstance(expression, ast.BinOp):
+        left = _expression_types(expression.left, assignments)
+        right = _expression_types(expression.right, assignments)
+        if "STRING" in left or "STRING" in right:
+            return {"STRING"}
+        if (left | right) <= {"INTEGER", "NUMBER"}:
+            return {"NUMBER" if "NUMBER" in left | right else "INTEGER"}
+    if isinstance(expression, ast.Call):
+        name = _call_name(expression.func)
+        if name in {"json.loads", "orjson.loads"}:
+            return {"JSON"}
+        if name in {"json.dumps", "orjson.dumps", "str", "repr"}:
+            return {"STRING"}
+        if name in {"dict"}:
+            return {"OBJECT"}
+        if name in {"list", "tuple", "set"}:
+            return {"ARRAY"}
+        if name in {"bool"}:
+            return {"BOOLEAN"}
+        if name in {"int"}:
+            return {"INTEGER"}
+        if name in {"float"}:
+            return {"NUMBER"}
+    return {"ANY"}
+
+
+def _python_return_types(code: str) -> set[str]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    functions = [item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name in {"handler", "main"}]
+    targets = functions or [tree]
+    assignments: dict[str, set[str]] = defaultdict(set)
+    for target in targets:
+        for item in ast.walk(target):
+            if isinstance(item, (ast.Assign, ast.AnnAssign)):
+                value = item.value
+                names: list[str] = []
+                if isinstance(item, ast.Assign):
+                    names = [candidate.id for candidate in item.targets if isinstance(candidate, ast.Name)]
+                elif isinstance(item.target, ast.Name):
+                    names = [item.target.id]
+                inferred = _expression_types(value, assignments)
+                for name in names:
+                    assignments[name].update(inferred)
+    returns: set[str] = set()
+    for target in targets:
+        for item in ast.walk(target):
+            if isinstance(item, ast.Return):
+                returns.update(_expression_types(item.value, assignments))
+    return returns
 
 
 def _tool_spec(raw: dict[str, Any], owner: str, parent: str | None = None) -> dict[str, Any]:
@@ -304,6 +460,8 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
     nodes: list[Node] = []
     edges: list[Edge] = []
     gaps: list[dict[str, Any]] = []
+    reference_type_checks: list[dict[str, Any]] = []
+    code_return_contracts: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
     def parse_graph(item: dict[str, Any], base: list[Any], scope: str, container: str | None = None) -> None:
@@ -345,6 +503,22 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
                 high_impact=high,
             )
             nodes.append(node)
+            if mapped == NodeType.CODE and str(config.get("language") or "python").lower() in {"python", "py", "python3"}:
+                inferred_types = sorted(_python_return_types(str(config.get("code") or "")))
+                declared_type = _contract_type(config.get("outputType"))
+                incompatible = bool(
+                    declared_type
+                    and inferred_types
+                    and all(item not in {"ANY", "NULL"} for item in inferred_types)
+                    and any(not _compatible_types(item, declared_type) for item in inferred_types)
+                )
+                code_return_contracts.append({
+                    "node_id": node_id,
+                    "pointer": f"{pointer(location)}/data/outputType",
+                    "declared_type": declared_type,
+                    "inferred_types": inferred_types,
+                    "compatible": not incompatible,
+                })
             if mapped == NodeType.UNKNOWN:
                 gaps.append({"node_id": node_id, "pointer": pointer(location), "reason": "unsupported_node_type", "original_type": raw_type})
             else:
@@ -392,18 +566,7 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
     node_map = {node.id: node for node in nodes}
     refs: list[VariableRef] = []
 
-    def resolve(symbol: str, consumer: Node, location: str, field: str) -> None:
-        if not symbol:
-            return
-        if symbol in node_ids:
-            refs.append(VariableRef(symbol, field or symbol, consumer.id, location, field, "node_id"))
-            return
-        if "." in symbol:
-            prefix, variable = symbol.split(".", 1)
-            if prefix in node_ids:
-                refs.append(VariableRef(prefix, variable, consumer.id, location, field, "explicit"))
-                return
-        candidates = list(symbol_producers.get(symbol, []))
+    def choose_candidates(candidates: list[str], consumer: Node) -> list[str]:
         if len(candidates) > 1 and consumer.container_id:
             scoped = [item for item in candidates if node_map[item].container_id == consumer.container_id]
             if scoped:
@@ -412,11 +575,50 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
             reachable = [item for item in candidates if _graph_path(adjacency, item, consumer.id)]
             if len(reachable) == 1:
                 candidates = reachable
+        return candidates
+
+    def add_resolved(producer_id: str, variable_path: str, consumer: Node, location: str, field: str, resolution: str, expected_type: Any = None) -> None:
+        refs.append(VariableRef(producer_id, variable_path, consumer.id, location, field, resolution))
+        producer_type = _producer_reference_type(node_map[producer_id], variable_path)
+        consumer_type = _contract_type(expected_type)
+        if producer_type and consumer_type:
+            reference_type_checks.append({
+                "producer_node_id": producer_id,
+                "consumer_node_id": consumer.id,
+                "variable_path": variable_path,
+                "consumer_field": field,
+                "pointer": location,
+                "producer_type": producer_type,
+                "consumer_type": consumer_type,
+                "compatible": _compatible_types(producer_type, consumer_type),
+            })
+
+    def resolve(symbol: str, consumer: Node, location: str, field: str, expected_type: Any = None) -> None:
+        if not symbol:
+            return
+        if symbol in node_ids:
+            add_resolved(symbol, "", consumer, location, field, "node_id", expected_type)
+            return
+        if "." in symbol:
+            prefix, variable = symbol.split(".", 1)
+            if prefix in node_ids:
+                add_resolved(prefix, variable, consumer, location, field, "explicit", expected_type)
+                return
+            candidates = choose_candidates(list(symbol_producers.get(prefix, [])), consumer)
+            if len(candidates) == 1:
+                add_resolved(candidates[0], variable, consumer, location, field, "symbol_path", expected_type)
+                return
+            if len(candidates) > 1:
+                for candidate in candidates:
+                    refs.append(VariableRef(candidate, variable, consumer.id, location, field, "ambiguous"))
+                gaps.append({"node_id": consumer.id, "pointer": location, "reason": "ambiguous_symbol", "symbol": symbol, "producers": candidates})
+                return
+        candidates = choose_candidates(list(symbol_producers.get(symbol, [])), consumer)
         if len(candidates) == 1:
-            refs.append(VariableRef(candidates[0], symbol, consumer.id, location, field, "symbol"))
+            add_resolved(candidates[0], "", consumer, location, field, "symbol", expected_type)
         elif len(candidates) > 1:
             for candidate in candidates:
-                refs.append(VariableRef(candidate, symbol, consumer.id, location, field, "ambiguous"))
+                refs.append(VariableRef(candidate, "", consumer.id, location, field, "ambiguous"))
             gaps.append({"node_id": consumer.id, "pointer": location, "reason": "ambiguous_symbol", "symbol": symbol, "producers": candidates})
         else:
             gaps.append({"node_id": consumer.id, "pointer": location, "reason": "unresolved_symbol", "symbol": symbol})
@@ -435,7 +637,7 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
                 location = f"{node.json_pointer}/data/{key}/{index}"
                 if str(item.get("variableType") or "").upper() == "REFERENCE":
                     if isinstance(raw_value, str) and raw_value:
-                        resolve(raw_value, node, location, name.lower())
+                        resolve(raw_value, node, location, name.lower(), item.get("type") or item.get("valueType") or item.get("value_type"))
                         if name:
                             local_params[name] = raw_value
                     elif item.get("required") is True or item.get("isRequired") is True:
@@ -452,7 +654,7 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
                 if not isinstance(raw_value, str) or not raw_value:
                     continue
                 location = f"{node.json_pointer}/data{pointer(['tools', *parts])}"
-                resolve(raw_value, node, location, str(item.get("name") or "tool_parameter").lower())
+                resolve(raw_value, node, location, str(item.get("name") or "tool_parameter").lower(), item.get("type") or item.get("valueType") or item.get("value_type"))
         for case_index, case in enumerate(node.config.get("conditionList", []) if isinstance(node.config.get("conditionList"), list) else []):
             for cond_index, condition in enumerate(case.get("subConditions", []) if isinstance(case, dict) else []):
                 if not isinstance(condition, dict):
@@ -476,7 +678,11 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
         if node.type == NodeType.CODE.value:
             for match in re.finditer(r"params\.get\(\s*['\"]([^'\"]+)['\"]", str(node.config.get("code") or "")):
                 name = match.group(1)
-                resolve(local_params.get(name, name), node, f"{node.json_pointer}/data/code", "code_parameter")
+                # ``params.get('x')`` is a local lookup, not a global workflow
+                # symbol.  It only contributes a data-flow edge when the CODE
+                # node's input contract explicitly binds x to a producer.
+                if name in local_params:
+                    resolve(local_params[name], node, f"{node.json_pointer}/data/code", "code_parameter")
 
     by_consumer: dict[str, list[VariableRef]] = defaultdict(list)
     for ref in refs:
@@ -506,6 +712,10 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
             "observed_node_field_count": sum(len(node.config) for node in nodes),
             "unmapped_node_field_count": sum(gap.get("reason") == "unmapped_node_field" for gap in gaps),
             "history_context_config": graph.get("historyContextConfig") if isinstance(graph.get("historyContextConfig"), dict) else {},
+            "reference_type_checks": reference_type_checks,
+            "reference_type_mismatches": [item for item in reference_type_checks if not item["compatible"]],
+            "code_return_contracts": code_return_contracts,
+            "code_return_mismatches": [item for item in code_return_contracts if not item["compatible"]],
         },
     )
     return ir, document

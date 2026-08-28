@@ -11,6 +11,7 @@ STATUS_ZH = {
     "CANDIDATE": "待验证", "COVERAGE_GAP": "覆盖缺口", "MITIGATED": "已缓解",
 }
 GATE_ZH = {"PASS": "通过", "REVIEW": "需复核", "FAIL": "不通过"}
+COMPLETENESS_ZH = {"COMPLETE": "完整", "RUNTIME_EVIDENCE_REQUIRED": "需补充运行时证据", "INCOMPLETE": "扫描器覆盖不完整"}
 CONTROL_DOMAIN_ZH = {
     "structure_coverage": "结构覆盖", "data_contract": "数据契约", "input_contract": "输入契约",
     "instruction_boundary": "指令与数据边界", "untrusted_content_boundary": "不可信内容边界",
@@ -50,6 +51,10 @@ def _zh_status(value: str) -> str:
 
 def _zh_gate(value: str) -> str:
     return GATE_ZH.get(value, value)
+
+
+def _zh_completeness(value: str) -> str:
+    return COMPLETENESS_ZH.get(value, value)
 
 
 def _zh_context(values: list[str]) -> str:
@@ -131,10 +136,18 @@ def semantic_inventory(ir: WorkflowIR, findings: list[Finding] | None = None) ->
         {"node_id": node.id, "kind": "knowledge", "name": node.title}
         for node in ir.nodes if node.type == NodeType.KNOWLEDGE.value
     ]
-    assets.extend(
-        {"node_id": node.id, "kind": "potential_sensitive_data", "name": node.title}
-        for node in ir.nodes if any(word in str(node.config).lower() for word in ("secret", "token", "password", "customer", "phone", "客户", "账号", "密钥"))
-    )
+    sensitive_words = ("secret", "password", "token", "credential", "customer", "phone", "身份证", "手机号", "客户", "账号", "密钥")
+    for node in ir.nodes:
+        semantic_parts = [node.title]
+        for key in ("paramList", "params", "output", "body", "header"):
+            values = node.config.get(key)
+            if not isinstance(values, list):
+                continue
+            for item in values:
+                if isinstance(item, dict):
+                    semantic_parts.extend(str(item.get(field) or "") for field in ("name", "label", "description", "classification", "dataClassification"))
+        if any(word in " ".join(semantic_parts).lower() for word in sensitive_words):
+            assets.append({"node_id": node.id, "kind": "potential_sensitive_data", "name": node.title})
     boundaries = []
     for node in ir.nodes:
         if node.external:
@@ -204,7 +217,14 @@ def report_json(ir: WorkflowIR, findings: list[Finding], gate: dict[str, Any], t
     severities = {name: sum(item.severity == name for item in findings) for name in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")}
     statuses = {name: sum(item.status == name for item in findings) for name in ("CONFIRMED", "OBSERVED", "PROBABLE", "CANDIDATE", "COVERAGE_GAP", "MITIGATED")}
     return {
-        "workflow": {"id": ir.workflow_id, "hash": ir.workflow_hash, "source_shape": ir.source_shape, "node_count": len(ir.nodes), "edge_count": len(ir.edges)},
+        "workflow": {
+            "id": ir.workflow_id,
+            "hash": ir.workflow_hash,
+            "source_shape": ir.source_shape,
+            "node_count": len(ir.nodes),
+            "edge_count": len(ir.edges),
+            "node_labels": {node.id: node.title for node in ir.nodes},
+        },
         "summary": {
             "finding_count": len(grouped["risk"]),
             "risk_item_count": len(grouped["risk"]),
@@ -215,6 +235,10 @@ def report_json(ir: WorkflowIR, findings: list[Finding], gate: dict[str, Any], t
             "severities": severities,
             "statuses": statuses,
             "quality_gate": gate["result"],
+            "risk_gate": gate.get("risk_gate_result", gate["result"]),
+            "completeness_result": gate.get("completeness_result", "COMPLETE"),
+            "scanner_gap_count": len(gate.get("scanner_gap_ids", [])),
+            "runtime_gap_count": len(gate.get("runtime_gap_ids", [])),
         },
         "findings": findings,
         "test_cluster_summary": {"case_count": len(tests.get("cases", [])), **tests.get("generation_audit", {})},
@@ -231,18 +255,54 @@ def report_json(ir: WorkflowIR, findings: list[Finding], gate: dict[str, Any], t
 
 def report_markdown(report: dict[str, Any]) -> str:
     summary = report["summary"]
+    labels = report.get("workflow", {}).get("node_labels", {})
+
+    def node_display(node_ids: list[str]) -> str:
+        if not node_ids:
+            return "工作流"
+        return "、".join(
+            f"{labels.get(node_id, node_id)}（`{node_id}`）" if labels.get(node_id) and labels.get(node_id) != node_id else f"`{node_id}`"
+            for node_id in node_ids
+        )
+
+    def item_title(item: dict[str, Any]) -> str:
+        anchor = item.get("anchor_node_id")
+        node_name = labels.get(anchor) if anchor else None
+        return f"{node_name}：{_zh_title(item)}" if node_name and node_name not in _zh_title(item) else _zh_title(item)
+
     lines = [
         "# 智能体 JSON 工作流静态安全扫描报告", "",
-        f"- 工作流：`{report['workflow']['id']}`",
-        f"- 发布门禁：**{_zh_gate(summary['quality_gate'])}**",
-        f"- 安全风险项：{summary['risk_item_count']}",
-        f"- JSON 原生配置观察：{summary['posture_observation_count']}",
-        f"- 加固建议：{summary['hardening_observation_count']}",
-        f"- 覆盖缺口：{summary['coverage_gap_count']}",
-        f"- 全部记录：{summary['total_record_count']}",
-        f"- 节点数 / 边数：{report['workflow']['node_count']} / {report['workflow']['edge_count']}",
-        "", "## 扫描覆盖情况", "",
+        f"工作流：`{report['workflow']['id']}`", "",
+        "## 一页结论", "",
+        "| 决策维度 | 结果 | 如何理解 |",
+        "|---|---:|---|",
+        f"| 风险门禁 | **{_zh_gate(summary.get('risk_gate', summary['quality_gate']))}** | 只由未豁免的安全风险项驱动 |",
+        f"| 扫描完整性 | **{_zh_completeness(summary.get('completeness_result', 'COMPLETE'))}** | 与漏洞是否成立分开判断 |",
+        f"| 安全风险项 | {summary['risk_item_count']} | 进入风险门禁 |",
+        f"| JSON 配置观察 | {summary['posture_observation_count']} | 已确认配置或数据契约事实，不自动算漏洞 |",
+        f"| 加固建议 | {summary['hardening_observation_count']} | 纵深防御与可靠性改进 |",
+        f"| 扫描器覆盖问题 | {summary.get('scanner_gap_count', 0)} | 需要补解析器或字段契约 |",
+        f"| 运行时待补证 | {summary.get('runtime_gap_count', 0)} | 需要平台、IAM、网络或工具实现证据 |",
+        f"| 工作流规模 | {report['workflow']['node_count']} 节点 / {report['workflow']['edge_count']} 边 | 本次静态分析范围 |",
     ]
+
+    severity_rank = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+    group_rank = {"risk": 0, "posture": 1, "coverage_gap": 2, "hardening": 3}
+    prioritized = sorted(
+        [item for item in report.get("findings", []) if not item.get("waived")],
+        key=lambda item: (group_rank.get(item.get("report_group", "risk"), 9), -severity_rank.get(item.get("severity", "INFO"), 0)),
+    )[:3]
+    lines.extend(["", "## 优先处理事项", ""])
+    if prioritized:
+        for index, item in enumerate(prioritized, 1):
+            nodes = item.get("node_ids", [])
+            responsible = labels.get(item.get("anchor_node_id")) or (labels.get(nodes[-1]) if nodes else "工作流")
+            action = " ".join(item.get("remediation", [])) or "补充证据并重新扫描。"
+            lines.append(f"{index}. **{responsible}**：{item['message']} 处理：{action}")
+    else:
+        lines.append("当前没有需要列入优先队列的记录。")
+
+    lines.extend(["", "## 扫描覆盖情况", ""])
     coverage = report.get("security_coverage", {})
     node_contract = coverage.get("node_type_contract", {})
     field_contract = coverage.get("node_field_contract", {})
@@ -252,7 +312,7 @@ def report_markdown(report: dict[str, Any]) -> str:
         f"- 节点字段契约覆盖：{field_contract.get('mapped', 0)}/{field_contract.get('observed', 0)}（{field_contract.get('coverage_ratio', 0):.1%}）",
         f"- 变量引用解析：{variable_resolution.get('resolved', 0)}/{variable_resolution.get('total', 0)}（{variable_resolution.get('coverage_ratio', 0):.1%}）",
         "- 上述指标衡量解析器和字段契约覆盖程度，不代表漏洞检出准确率。",
-        "- 只有安全风险项参与发布门禁；配置观察、加固建议和覆盖缺口分别统计。",
+        "- 风险门禁、扫描器覆盖问题和运行时待补证分别计算，避免用 PASS 掩盖扫描不完整。",
     ])
 
     def add_group(title: str, group: str, empty: str) -> None:
@@ -262,14 +322,31 @@ def report_markdown(report: dict[str, Any]) -> str:
             lines.append(empty)
             return
         for finding in members:
+            severity_label = SEVERITY_ZH.get(finding["severity"], finding["severity"])
+            heading_label = f"覆盖缺口｜潜在影响：{severity_label}" if group == "coverage_gap" else severity_label
             lines.extend([
-                f"### [{SEVERITY_ZH.get(finding['severity'], finding['severity'])}] {_zh_title(finding)}", "",
+                f"### [{heading_label}] {item_title(finding)}", "",
                 f"- 证据状态：{_zh_status(finding['status'])}",
                 f"- 规则：`{finding['rule_id']}`" + (f"；关联规则：`{', '.join(finding.get('related_rule_ids', []))}`" if finding.get("related_rule_ids") else ""),
                 f"- 控制域：{CONTROL_DOMAIN_ZH.get(finding['control_domain'], finding['control_domain'])}",
-                f"- 关联节点：`{', '.join(finding.get('node_ids', [])) or '工作流'}`",
+                f"- 业务节点：{node_display(finding.get('node_ids', []))}",
                 f"- 证据说明：{finding['message']}",
             ])
+            paths = finding.get("path_variants", [])
+            if paths:
+                lines.append(f"- 代表路径：{' → '.join(labels.get(node_id, node_id) for node_id in paths[0])}")
+            locations = finding.get("dsl_locations", [])
+            if locations:
+                shown = locations[:3]
+                suffix = f"，另 {len(locations) - 3} 处" if len(locations) > 3 else ""
+                lines.append(f"- 证据位置：{', '.join(f'`{item}`' for item in shown)}{suffix}")
+            instances = finding.get("instance_summaries", [])
+            if len(instances) > 1:
+                lines.append(f"- 具体实例（{len(instances)}）：")
+                for instance in instances[:6]:
+                    lines.append(f"  - `{instance.get('rule_id')}`：{instance.get('message')}")
+                if len(instances) > 6:
+                    lines.append(f"  - 其余 {len(instances) - 6} 个实例见机器产物。")
             if finding.get("missing_context"):
                 lines.append(f"- 尚缺上下文：{_zh_context(finding['missing_context'])}")
             lines.append(f"- 修复建议：{' '.join(finding.get('remediation', []))}")
@@ -278,7 +355,7 @@ def report_markdown(report: dict[str, Any]) -> str:
     add_group("安全风险项", "risk", "未发现当前规则和 JSON 可见范围内的安全风险项。")
     add_group("JSON 原生配置观察", "posture", "没有额外的 JSON 原生配置观察。")
     add_group("加固建议", "hardening", "没有额外的加固建议。")
-    add_group("覆盖缺口", "coverage_gap", "没有记录额外覆盖缺口。")
+    add_group("覆盖缺口与待补证", "coverage_gap", "没有记录额外覆盖缺口。")
     advisory = report.get("model_advisory", {})
     lines.extend(["## 模型辅助说明", ""])
     if advisory.get("enabled"):

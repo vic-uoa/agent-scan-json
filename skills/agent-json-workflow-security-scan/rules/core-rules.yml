@@ -16,6 +16,7 @@ rules:
   - {id: FLOW-014, title: 条件分支与边句柄契约不一致, severity: MEDIUM, detectability: S, control_domain: data_contract, standards: ["AISVS v1.0-C9", "CWE-670"], dynamic_test: branch_bypass}
   - {id: FLOW-015, title: 历史上下文隔离与保留策略不可验证, severity: MEDIUM, detectability: M, control_domain: data_protection, standards: ["AISVS v1.0-C8", "ASI06:2026"], dynamic_test: memory_context_isolation}
   - {id: FLOW-016, title: 循环子图入口输出或边界契约不完整, severity: MEDIUM, detectability: S, control_domain: data_contract, standards: ["AISVS v1.0-C9"], dynamic_test: runaway_loop}
+  - {id: FLOW-017, title: 跨节点引用的数据类型不兼容, severity: MEDIUM, detectability: S, control_domain: data_contract, report_group: posture, standards: ["AISVS v1.0-C7", "AISVS v1.0-C9", "CWE-704"], dynamic_test: data_contract_type_confusion}
 
   - {id: IN-001, title: 输入缺少明确类型或对象 Schema, severity: MEDIUM, detectability: S, control_domain: input_contract, standards: ["AISVS v1.0-C2", "ASVS 5.0 V2"], dynamic_test: input_schema}
   - {id: IN-002, title: 输入缺少长度数量或枚举边界, severity: LOW, detectability: S, control_domain: input_contract, report_group: hardening, standards: ["AISVS v1.0-C2.1", "LLM10:2025"], dynamic_test: input_boundary}
@@ -43,6 +44,7 @@ rules:
   - {id: TOOL-010, title: 高后果动作缺少确定性动作门, severity: HIGH, detectability: H, control_domain: action_authorization, standards: ["ASI02:2026", "AISVS v1.0-C9"], dynamic_test: action_gate_bypass}
   - {id: TOOL-011, title: 代码语言或语法无法完整静态分析, severity: MEDIUM, detectability: S, control_domain: execution_boundary, standards: ["ASI05:2026", "CWE-94"], dynamic_test: unexpected_code_execution}
   - {id: TOOL-012, title: 工具参数包含或可能暴露认证材料, severity: HIGH, detectability: S, control_domain: data_protection, standards: ["ASI03:2026", "LLM02:2025", "CWE-798"], dynamic_test: prompt_secret_leakage}
+  - {id: TOOL-013, title: 代码返回类型与节点声明契约不一致, severity: MEDIUM, detectability: S, control_domain: output_contract, report_group: posture, standards: ["AISVS v1.0-C7", "AISVS v1.0-C9", "CWE-704"], dynamic_test: code_output_contract}
 
   - {id: OUT-001, title: 最终输出缺少或违反结构化契约, severity: HIGH, detectability: S, control_domain: output_contract, standards: ["LLM05:2025", "AISVS v1.0-C7"], dynamic_test: output_schema}
   - {id: OUT-002, title: 敏感信息可能通过输出披露, severity: HIGH, detectability: H, control_domain: data_protection, standards: ["LLM02:2025", "ASVS 5.0 V14"], dynamic_test: sensitive_output}

@@ -30,12 +30,16 @@
 ## 绑定与符号
 
 - 节点 `outputName` 建立生产者符号；`params/input/output/body/query/header/loopInput` 中 `variableType=REFERENCE` 建立消费者引用。
+- `outputName.field.subfield` 先按输出别名选择生产者，再沿该节点字段级输出 Schema 解析子路径；节点 ID 路径与输出别名路径都支持。
 - `systemInput.<field>` 直接绑定入口字段。
 - LOOP 内部输入以平台导出的稳定符号 `loopStart` 绑定同容器的 `LOOP_START` 节点；这是本平台方言，不是 React Flow 语义。
 - Prompt 中 `${name}` 先绑定同节点参数，再解析参数所引用的全局符号。
 - 同名生产者按控制流可达性消歧；无法唯一解析时保留所有候选并记录 `ambiguous_symbol`。
 - 空引用、必填但无值、未知类型和容器内部不完整路径都保留 JSON Pointer 证据。
 - `AGENT.tools[].toolList[].toolParamConfig` 内的引用会递归进入数据流，不局限于节点顶层参数。
+- 生产者与消费者都声明类型时执行兼容性检查；数字宽化与 JSON/对象容器允许兼容，明确的数组/对象/字符串冲突记录为 `FLOW-017`。
+- 消费者引用整个输入对象时，安全语义继续递归到入口 Schema 的 `sub/children` 字段，避免漏掉嵌套 URL、认证材料和资源标识。
+- `CODE` 的 Python `handler/main` 返回表达式使用 AST 做保守类型推断；明确冲突记录为 `TOOL-013`，动态或无法推断的返回保持未知。
 
 ## Agent 工具注册
 

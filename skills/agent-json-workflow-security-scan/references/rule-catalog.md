@@ -11,7 +11,7 @@
 - `hardening`：输入长度等纵深防御建议，在没有危险下游或资源放大路径时不称为漏洞。
 - `coverage_gap`：运行时事实不可见。只记录一次合理缺口，不得按每个节点机械复制，也不进入风险数量。
 
-当前目录包含 52 条规则。数量不是准确率指标；规则只有在节点类型、字段契约、数据/控制路径和证据状态满足时才适用。逐节点审核面见 [node-review-matrix.md](node-review-matrix.md)。
+当前目录包含 54 条规则。数量不是准确率指标；规则只有在节点类型、字段契约、数据/控制路径和证据状态满足时才适用。逐节点审核面见 [node-review-matrix.md](node-review-matrix.md)。
 
 主控制基线为 [OWASP AISVS 1.0](https://owasp.org/www-project-artificial-intelligence-security-verification-standard-aisvs-docs/)；风险映射使用 [OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/2025/12/09/owasp-genai-security-project-releases-top-10-risks-and-mitigations-for-agentic-ai-security/)、[OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)、[MITRE ATLAS](https://atlas.mitre.org/)、[OWASP ASVS 5.0](https://owasp.org/www-project-application-security-verification-standard/) 和 CWE。NIST AI 100-2 用于术语与威胁分类，不作为单字段漏洞判据。
 
@@ -25,6 +25,8 @@
 - `TOOL`：参数控制、SSRF、代码执行、身份权限、输出、超时、供应链和动作门。
 - `OUT`：输出契约、披露、中间输出、富文本与引用。
 - `KB`：数据集范围、租户隔离、间接注入、来源和检索边界。
+
+本轮新增的 `FLOW-017` 检查跨节点显式类型冲突，`TOOL-013` 检查 Python 明确返回类型与 CODE 节点声明契约冲突。两者在普通局部路径默认为 JSON 配置观察；只有进入机器消费、副作用或高影响后果时才进入风险组。
 
 普通只读 RAG 只有在知识内容进入模型 Prompt 时作为低等级指令边界证据，并与同一模型的用户输入边界聚合；只有继续到达副作用能力、高影响决策或明确高信任输出时才升级为独立攻击链。固定单数据集不因 DSL 未携带运行时 ACL 而逐节点报警。来源传播关闭只有在业务或输出契约明确要求引用时才形成 Finding。
 
