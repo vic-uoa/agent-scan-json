@@ -16,6 +16,7 @@ from agent_json_workflow_scan.parser import parse_workflow  # noqa: E402
 from agent_json_workflow_scan.pipeline import run_scan  # noqa: E402
 from agent_json_workflow_scan.engine import execute_rules  # noqa: E402
 from agent_json_workflow_scan.models import Edge, Node, NodeType, VariableRef, WorkflowIR  # noqa: E402
+from agent_json_workflow_scan.report import render_risk_chain_svg, render_workflow_svg  # noqa: E402
 
 
 class ScannerTests(unittest.TestCase):
@@ -222,45 +223,62 @@ class ScannerTests(unittest.TestCase):
             output = Path(tmp)
             result = run_scan(dsl_path=self.fixtures / "risky-workflow.json", output_dir=output, rules_path=self.rules, mode="structure-only")
             self.assertEqual(result["quality_gate"], "FAIL")
-            findings = json.loads((output / "08-findings.json").read_text(encoding="utf-8"))["findings"]
-            rule_ids = {rule for item in findings for rule in [item["rule_id"], *item.get("related_rule_ids", [])]}
+            findings = result["_findings"]
+            rule_ids = {rule for item in findings for rule in [item.rule_id, *item.related_rule_ids]}
             self.assertIn("FLOW-009", rule_ids)
             self.assertIn("LLM-003", rule_ids)
-            verification = json.loads((output / "07-verification.json").read_text(encoding="utf-8"))["verification"]
-            self.assertTrue(verification["passed"])
+            self.assertTrue(result["_verification"]["passed"])
+            report_path = output / "risky-workflow" / "risky-workflow-安全扫描报告.html"
+            self.assertEqual(report_path.resolve(), Path(result["report_path"]))
+            self.assertEqual([report_path], list(report_path.parent.iterdir()))
 
-    def test_human_reports_are_chinese_first_without_changing_machine_contracts(self) -> None:
+    def test_html_report_is_chinese_first_and_embeds_visualizations(self) -> None:
         with TemporaryDirectory() as tmp:
             output = Path(tmp)
-            run_scan(dsl_path=self.fixtures / "risky-workflow.json", output_dir=output, rules_path=self.rules, mode="structure-only")
-            report_md = (output / "report.md").read_text(encoding="utf-8")
-            surface_md = (output / "attack-surface.md").read_text(encoding="utf-8")
-            report_json_data = json.loads((output / "report.json").read_text(encoding="utf-8"))
+            result = run_scan(dsl_path=self.fixtures / "risky-workflow.json", output_dir=output, rules_path=self.rules, mode="structure-only")
+            report_html = Path(result["report_path"]).read_text(encoding="utf-8")
 
             for label in (
-                "# 智能体 JSON 工作流静态安全扫描报告", "## 一页结论", "风险门禁", "扫描完整性",
-                "## 扫描覆盖情况", "## 优先处理事项", "## 安全风险项", "业务节点",
-                "证据状态", "控制域", "证据位置", "修复建议", "## 使用边界",
+                "安全扫描报告", "发布门禁", "扫描完整性", "工作流图", "风险与逻辑链",
+                "对应逻辑链", "证据状态", "控制域", "修复建议", "扫描边界",
             ):
-                self.assertIn(label, report_md)
-            for old_label in (
-                "Workflow Security Report", "Quality gate", "## Coverage", "Security risk findings",
-                "JSON-native posture observations", "Hardening observations", "Coverage gaps",
-                "- Status:", "- Evidence:", "- Remediation:", "## Model advisory", "## Limitations",
-            ):
-                self.assertNotIn(old_label, report_md)
-            for label in ("# 工作流攻击面", "## 入口", "## 信任边界", "## 攻击路径", "严重等级", "证据状态"):
-                self.assertIn(label, surface_md)
-            for old_label in ("# Attack Surface", "## Entry points", "## Trust boundaries", "## Attack paths"):
-                self.assertNotIn(old_label, surface_md)
-
-            self.assertIn("LLM-003", report_md)
-            self.assertNotIn("structured_data_contract", report_md)
-            machine_report = report_json_data["report"]
+                self.assertIn(label, report_html)
+            self.assertIn("<svg", report_html)
+            self.assertIn("LLM-003", report_html)
+            self.assertNotIn("report.md", report_html)
+            self.assertNotIn("workflow-ir.json", report_html)
+            self.assertNotIn("structured_data_contract", report_html)
+            machine_report = result["_report"]
             self.assertIn(machine_report["summary"]["quality_gate"], {"PASS", "REVIEW", "FAIL"})
             self.assertIn(machine_report["summary"]["completeness_result"], {"COMPLETE", "RUNTIME_EVIDENCE_REQUIRED", "INCOMPLETE"})
-            self.assertIn("node_labels", machine_report["workflow"])
-            self.assertTrue(all(item["status"] in {"CONFIRMED", "OBSERVED", "PROBABLE", "CANDIDATE", "COVERAGE_GAP", "MITIGATED"} for item in machine_report["findings"]))
+            self.assertTrue(machine_report["workflow"]["nodes"])
+            self.assertTrue(machine_report["workflow"]["edges"])
+
+    def test_visuals_preserve_canvas_layout_and_focus_risk_chains(self) -> None:
+        workflow = {
+            "nodes": [
+                {"id": "start", "title": "用户输入", "type": "INPUT", "position": {"x": 0, "y": 100}},
+                {"id": "route", "title": "状态判断", "type": "CONDITION", "position": {"x": 300, "y": 100}, "condition_subject": "状态解析", "condition_case_count": 1, "branch_conditions": {"0": "状态 等于「通过」", "false": "否则"}},
+                {"id": "yes", "title": "通过处理", "type": "LLM", "position": {"x": 600, "y": 0}},
+                {"id": "no", "title": "拒绝处理", "type": "OUTPUT", "position": {"x": 600, "y": 220}},
+            ],
+            "edges": [
+                {"source": "start", "target": "route", "source_index": 0},
+                {"source": "route", "target": "yes", "source_index": 0},
+                {"source": "route", "target": "no", "source_handle": "false", "source_index": 1},
+            ],
+        }
+        full_svg = render_workflow_svg(workflow, [], "canvas-test")
+        self.assertIn('data-layout="dsl-canvas"', full_svg)
+        self.assertIn("状态 等于「通过」", full_svg)
+        self.assertIn("否则", full_svg)
+        self.assertIn("条件 1", full_svg)
+        focus_svg = render_risk_chain_svg(workflow, ["start", "route", "yes"], "focus-test", "MEDIUM")
+        self.assertIn("用户输入", focus_svg)
+        self.assertIn("状态判断", focus_svg)
+        self.assertIn("通过处理", focus_svg)
+        self.assertNotIn("拒绝处理", focus_svg)
+        self.assertIn("#a86508", focus_svg)
 
     def test_assessment_requires_hash_and_generates_cluster(self) -> None:
         dsl = self.fixtures / "safe-workflow.json"
@@ -274,8 +292,8 @@ class ScannerTests(unittest.TestCase):
                 "samples": [{"sample_id": "S1", "input": {"question": "hello"}, "expected_business_intent": "answer safely"}],
             }), encoding="utf-8")
             output = temp / "out"
-            run_scan(dsl_path=dsl, samples_path=samples, output_dir=output, rules_path=self.rules, mode="assessment")
-            cluster = json.loads((output / "05-test-cluster.json").read_text(encoding="utf-8"))["test_cluster"]
+            result = run_scan(dsl_path=dsl, samples_path=samples, output_dir=output, rules_path=self.rules, mode="assessment")
+            cluster = result["_test_cluster"]
             self.assertGreaterEqual(len(cluster["cases"]), 4)
             self.assertTrue(cluster["generation_audit"]["all_cases_not_executed"])
 
@@ -313,7 +331,7 @@ class ScannerTests(unittest.TestCase):
             }), encoding="utf-8")
             output = temp / "out"
             result = run_scan(dsl_path=dsl, samples_path=samples, model_advisory_path=proposal, output_dir=output, rules_path=self.rules, mode="assessment")
-            advisory = json.loads((output / "06-model-advisory.json").read_text(encoding="utf-8"))["model_advisory"]
+            advisory = result["_model_advisory"]
             self.assertEqual(result["quality_gate"], "FAIL")
             self.assertEqual(advisory["accepted_case_ids"], ["MODEL-CASE-1"])
             self.assertFalse(advisory["authoritative"])

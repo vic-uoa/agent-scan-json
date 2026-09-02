@@ -10,3 +10,13 @@
 python skills/agent-json-workflow-security-scan/scripts/scan_workflow.py scan `
   --dsl <workflow.json> --output <output-directory> --mode structure-only
 ```
+
+扫描器只写入一份自包含 HTML 报告。`--output` 表示报告根目录，实际目录和报告文件名会跟随上传的工作流文件名：
+
+```text
+<output-directory>/
+└─ <workflow-name>/
+   └─ <workflow-name>-安全扫描报告.html
+```
+
+Workflow IR、确定性事实、规则候选、输入簇、Finding、攻击面和质量门禁全部在扫描进程内存中传递，不会作为 JSON 或 Markdown 中间文件落盘。报告包含由 DSL 转换的完整工作流 SVG，以及与每项风险就地绑定的聚焦逻辑链 SVG；所有样式、脚本和图形均内嵌，可离线查看。

@@ -28,4 +28,4 @@
 - `COVERAGE_GAP` 不是漏洞；报告区分扫描器未理解 JSON 的覆盖问题与 JSON 本身不包含的运行时待补证。
 - 风险数量只计算 `report_group=risk`；`posture`、`hardening` 和 `coverage_gap` 分别报告。
 
-每个节点的实际审核维度、Finding 和覆盖缺口写入 `03-semantic-inventory.json.security_coverage.node_reviews`，汇总比例写入 `report.json.security_coverage`。
+每个节点的实际审核维度、Finding 和覆盖缺口保存在内存中的 `semantic_inventory.security_coverage.node_reviews`，汇总比例保存在内存报告对象的 `security_coverage`，并以中文摘要和可展开证据呈现在最终 HTML 中；这些对象不单独落盘。

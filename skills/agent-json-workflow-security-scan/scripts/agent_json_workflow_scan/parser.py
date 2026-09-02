@@ -462,6 +462,7 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
     gaps: list[dict[str, Any]] = []
     reference_type_checks: list[dict[str, Any]] = []
     code_return_contracts: list[dict[str, Any]] = []
+    canvas_positions: dict[str, dict[str, float]] = {}
     seen_ids: set[str] = set()
 
     def parse_graph(item: dict[str, Any], base: list[Any], scope: str, container: str | None = None) -> None:
@@ -503,6 +504,15 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
                 high_impact=high,
             )
             nodes.append(node)
+            raw_position = raw.get("position")
+            if isinstance(raw_position, dict):
+                try:
+                    canvas_positions[node_id] = {
+                        "x": float(raw_position["x"]),
+                        "y": float(raw_position["y"]),
+                    }
+                except (KeyError, TypeError, ValueError):
+                    pass
             if mapped == NodeType.CODE and str(config.get("language") or "python").lower() in {"python", "py", "python3"}:
                 inferred_types = sorted(_python_return_types(str(config.get("code") or "")))
                 declared_type = _contract_type(config.get("outputType"))
@@ -716,6 +726,7 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
             "reference_type_mismatches": [item for item in reference_type_checks if not item["compatible"]],
             "code_return_contracts": code_return_contracts,
             "code_return_mismatches": [item for item in code_return_contracts if not item["compatible"]],
+            "canvas_positions": canvas_positions,
         },
     )
     return ir, document

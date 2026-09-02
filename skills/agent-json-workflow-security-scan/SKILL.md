@@ -11,7 +11,7 @@ description: 对内部 JSON 工作流 DSL 做确定性静态安全扫描，覆�
 2. 解析结构并计算 SHA-256。解析器接受直接 `{id,nodes,edges}` 图对象，也接受内部 API 返回中的 `body.body` 图对象；未知节点保留拓扑并记录覆盖缺口。
 3. `assessment` 模式下，展示并请用户确认至少一个代表性业务输入、业务意图、安全不变量和禁止副作用。用户确认后才可把 `confirmed_by_user` 写为 `true`；`confirmed_dsl_sha256` 由扫描器生成并校验，不是用户确认项。
 4. 运行确定性规则与输入簇生成。模型不得创建、删除、升级、降级或抑制 Finding。需要额外语义覆盖时，可把模型生成的建议文件通过 `--model-advisory` 导入；只接受通过 Schema、种子、节点、规则和 Finding 引用校验的惰性测试、复核问题与非权威措辞。
-5. 先查看 `08-findings.json` 和 `11-quality-gate.json`，分别确认风险门禁和扫描完整性，再向用户解释 `report.md` 与 `attack-surface.md`。
+5. 扫描器在内存中完成 Finding、风险门禁、扫描完整性和引用校验，只向报告目录写入最终 HTML。向用户解释报告时先说明发布门禁和扫描完整性，再结合完整工作流图与每条风险对应的逻辑链图说明证据。
 
 ```powershell
 python scripts/scan_workflow.py scan `
@@ -59,7 +59,9 @@ python scripts/scan_workflow.py scan `
 
 报告把记录分为四组：`risk` 安全风险、`posture` JSON 原生配置观察、`hardening` 加固建议和 `coverage_gap` 覆盖缺口。只有 `risk` 计入安全风险数量并驱动门禁；其余各组必须单独计数，不能包装成漏洞。覆盖缺口还要拆成扫描器覆盖问题（未知节点、字段或引用解析失败）与运行时待补证（IAM、网络、沙盒等 JSON 外事实）。
 
-人工报告必须中文优先：`report.md` 与 `attack-surface.md` 的标题、栏目、字段标签、严重度、证据状态、门禁结果、控制域和缺失上下文使用中文；规则编号、节点 ID、JSON/MCP/TLS 等技术标识按原值保留。机器产物（尤其 `report.json`、`08-findings.json` 和 `11-quality-gate.json`）继续使用稳定的英文字段名与枚举值，禁止为了展示中文而改变接口契约。
+最终报告必须是中文优先的自包含 HTML：标题、栏目、字段标签、严重度、证据状态、门禁结果、控制域和缺失上下文使用中文；规则编号、节点 ID、JSON/MCP/TLS 等技术标识按原值保留。Workflow IR、事实、Finding、攻击面、输入簇和门禁对象仅在扫描进程内存中保持稳定的英文字段名与枚举值，不得为了展示中文而改变内部接口契约，也不得将这些中间对象落盘。
+
+`--output <报告根目录>` 必须创建 `<工作流文件名>/<工作流文件名>-安全扫描报告.html`。目录名来自上传 DSL 的文件名（去除扩展名并替换 Windows 非法字符），不得使用扫描 ID 或固定目录名。HTML 必须内嵌完整工作流 SVG 与风险逻辑链 SVG，不生成独立图片、JSON、Markdown 或其他辅助文件。
 
 默认风险门禁：未豁免的 `risk + CONFIRMED + CRITICAL/HIGH` 时 `FAIL`；无阻断项但存在其他 `risk` 时 `REVIEW`；只有 posture、hardening 或 coverage gap 时不据此宣称存在漏洞。扫描完整性独立输出：解析器/字段/引用覆盖有缺口时为 `INCOMPLETE`，仅缺运行时事实时为 `RUNTIME_EVIDENCE_REQUIRED`，否则为 `COMPLETE`。
 
@@ -69,7 +71,7 @@ python scripts/scan_workflow.py scan `
 - 解释规则来源、适用条件或标准映射时，阅读 [references/rule-catalog.md](references/rule-catalog.md)。
 - 修改规则触发、严重度、排除条件、运行时缺口或误报策略时，必须阅读 [references/applicability-model.md](references/applicability-model.md)，并同步更新 `rules/rule-applicability.yml`。
 - 解释节点审核面、覆盖率或准确率边界时，阅读 [references/node-review-matrix.md](references/node-review-matrix.md)。
-- 集成产物或未来沙盒执行器时，阅读 [references/artifact-contracts.md](references/artifact-contracts.md)。
+- 集成内存对象、最终 HTML 或未来沙盒执行器时，阅读 [references/artifact-contracts.md](references/artifact-contracts.md)。
 - 必须使用 `scripts/scan_workflow.py`，不得在 Prompt 中重新实现扫描逻辑。
 
 修改解析器、规则、IR、输入簇、门禁或报告后，运行：

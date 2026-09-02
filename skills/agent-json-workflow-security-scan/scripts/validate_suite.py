@@ -29,15 +29,14 @@ def main() -> int:
     root = SCRIPT_DIR.parent
     results = []
     for case in CASES:
-        output = args.output / case["name"]
         run = run_scan(
             dsl_path=root / "tests" / "fixtures" / f"{case['name']}.json",
-            output_dir=output,
+            output_dir=args.output,
             rules_path=root / "rules" / "core-rules.yml",
             mode="structure-only",
         )
-        report = json.loads((output / "report.json").read_text(encoding="utf-8"))["report"]
-        rule_ids = {rule for item in report["findings"] for rule in [item["rule_id"], *item.get("related_rule_ids", [])]}
+        report = run["_report"]
+        rule_ids = {rule for item in run["_findings"] for rule in [item.rule_id, *item.related_rule_ids]}
         required = case.get("required", set())
         count_ok = report["summary"]["finding_count"] <= case.get("max_findings", 1000)
         passed = run["quality_gate"] == case["gate"] and required.issubset(rule_ids) and count_ok

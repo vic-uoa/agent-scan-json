@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan = sub.add_parser("scan")
     scan.add_argument("--dsl", type=Path, required=True)
     scan.add_argument("--samples", type=Path)
-    scan.add_argument("--output", type=Path, required=True)
+    scan.add_argument("--output", type=Path, required=True, help="Report root; creates <workflow name>/<workflow name>-安全扫描报告.html and writes no intermediate artifacts.")
     scan.add_argument("--mode", choices=("assessment", "structure-only"), default="assessment")
     scan.add_argument("--rules", type=Path, default=SCRIPT_DIR.parent / "rules" / "core-rules.yml")
     scan.add_argument("--waivers", type=Path)
@@ -35,7 +35,7 @@ def main() -> int:
             dsl_path=args.dsl, samples_path=args.samples, output_dir=args.output,
             rules_path=args.rules, waivers_path=args.waivers, model_advisory_path=args.model_advisory, mode=args.mode,
         )
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps({key: value for key, value in result.items() if not key.startswith("_")}, ensure_ascii=False, indent=2))
         return int(result["exit_code"])
     except Exception as error:
         print(json.dumps({"error": str(error), "type": type(error).__name__}, ensure_ascii=False), file=sys.stderr)

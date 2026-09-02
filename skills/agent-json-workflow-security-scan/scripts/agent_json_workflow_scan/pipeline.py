@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from hashlib import sha256
 from pathlib import Path
 from typing import Any
 import json
@@ -12,21 +11,9 @@ from jsonschema import Draft202012Validator
 from .advisory import merge_model_advisory
 from .cluster import build_test_cluster
 from .engine import execute_rules
-from .models import PRODUCER_VERSION, SCHEMA_VERSION, Finding, WorkflowIR, to_jsonable, utc_now, write_json
+from .models import Finding, WorkflowIR, to_jsonable
 from .parser import parse_workflow
-from .report import attack_surface, attack_surface_markdown, dynamic_plan, report_json, report_markdown, semantic_inventory
-
-
-def artifact(payload: dict[str, Any], scan_id: str, producer: str, workflow_hash: str) -> dict[str, Any]:
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "scan_id": scan_id,
-        "producer": producer,
-        "producer_version": PRODUCER_VERSION,
-        "workflow_hash": workflow_hash,
-        "created_at": utc_now(),
-        **payload,
-    }
+from .report import attack_surface, render_html_report, report_json, semantic_inventory
 
 
 def load_samples(path: Path | None) -> dict[str, Any]:
@@ -129,36 +116,17 @@ def verify(findings: list[Finding], facts: list[Any], candidates: dict[str, Any]
     return {"passed": passed, "invalid_node_refs": invalid_nodes, "invalid_fact_refs": invalid_facts, "invalid_test_finding_refs": invalid_test_refs, "lost_raw_rule_ids": lost_rules, "all_tests_not_executed": all_not_executed}
 
 
-def write_index(output: Path, scan_id: str, workflow_hash: str) -> None:
-    entries = []
-    for path in sorted(output.iterdir()):
-        if not path.is_file() or path.name == "12-artifact-index.json":
-            continue
-        content = path.read_bytes()
-        entries.append({"file": path.name, "size": len(content), "sha256": sha256(content).hexdigest()})
-    write_json(output / "12-artifact-index.json", artifact({"artifacts": entries}, scan_id, "artifact-indexer", workflow_hash))
-
-
 def run_scan(*, dsl_path: Path, output_dir: Path, rules_path: Path, samples_path: Path | None = None, waivers_path: Path | None = None, model_advisory_path: Path | None = None, mode: str = "assessment") -> dict[str, Any]:
     if mode not in {"assessment", "structure-only"}:
         raise ValueError("mode must be assessment or structure-only")
-    output_dir.mkdir(parents=True, exist_ok=True)
     ir, _document = parse_workflow(dsl_path)
     samples = load_samples(samples_path)
     validate_samples(samples, ir, mode)
     scan_id = str(uuid.uuid4())
-    manifest = {"mode": mode, "source_file": dsl_path.name, "source_shape": ir.source_shape, "rules_file": rules_path.name, "samples_confirmed": samples.get("confirmed_by_user") is True, "model_advisory_supplied": model_advisory_path is not None}
-    write_json(output_dir / "00-scan-manifest.json", artifact({"manifest": manifest}, scan_id, "scan-orchestrator", ir.workflow_hash))
-    write_json(output_dir / "01-workflow-ir.json", artifact({"workflow_ir": ir}, scan_id, "json-workflow-parser", ir.workflow_hash))
     facts, findings, candidates = execute_rules(ir, rules_path)
-    write_json(output_dir / "02-security-facts.json", artifact({"facts": facts}, scan_id, "deterministic-rule-engine", ir.workflow_hash))
     inventory = semantic_inventory(ir, findings)
-    write_json(output_dir / "03-semantic-inventory.json", artifact({"semantic_inventory": inventory}, scan_id, inventory["producer"], ir.workflow_hash))
-    write_json(output_dir / "04-rule-candidates.json", artifact({"rule_candidates": candidates}, scan_id, "deterministic-rule-engine", ir.workflow_hash))
     base_tests = build_test_cluster(samples, findings, ir)
     tests, model_advisory = merge_model_advisory(model_advisory_path, ir, findings, samples, base_tests)
-    write_json(output_dir / "05-test-cluster.json", artifact({"test_cluster": tests}, scan_id, tests["producer"], ir.workflow_hash))
-    write_json(output_dir / "06-model-advisory.json", artifact({"model_advisory": model_advisory}, scan_id, "model-boundary", ir.workflow_hash))
     waiver_audit = apply_waivers(findings, load_waivers(waivers_path), ir.workflow_hash)
     gate = quality_gate(findings, waiver_audit)
     verification = verify(findings, facts, candidates, tests, ir)
@@ -172,19 +140,14 @@ def run_scan(*, dsl_path: Path, output_dir: Path, rules_path: Path, samples_path
             if case.get("generation_source") == "model_proposal"
         ),
     }
-    write_json(output_dir / "07-verification.json", artifact({"verification": verification}, scan_id, "deterministic-verifier", ir.workflow_hash))
     if not verification["passed"]:
         raise ValueError(f"Artifact verification failed: {verification}")
-    write_json(output_dir / "08-findings.json", artifact({"findings": findings}, scan_id, "deterministic-rule-engine", ir.workflow_hash))
     surface = attack_surface(ir, findings, tests, inventory)
-    write_json(output_dir / "09-attack-surface.json", artifact({"attack_surface": surface}, scan_id, "attack-surface-builder", ir.workflow_hash))
-    (output_dir / "attack-surface.md").write_text(attack_surface_markdown(surface), encoding="utf-8")
-    write_json(output_dir / "10-dynamic-test-plan.json", artifact({"dynamic_test_plan": dynamic_plan(surface, tests)}, scan_id, "sandbox-plan-builder", ir.workflow_hash))
-    write_json(output_dir / "11-quality-gate.json", artifact({"quality_gate": gate}, scan_id, "quality-gate", ir.workflow_hash))
     report = report_json(ir, findings, gate, tests, surface, model_advisory)
-    write_json(output_dir / "report.json", artifact({"report": report}, scan_id, "report-builder", ir.workflow_hash))
-    (output_dir / "report.md").write_text(report_markdown(to_jsonable(report)), encoding="utf-8")
-    write_index(output_dir, scan_id, ir.workflow_hash)
+    report_dir = output_dir / _report_directory_name(dsl_path)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"{_report_directory_name(dsl_path)}-安全扫描报告.html"
+    report_path.write_text(render_html_report(to_jsonable(report)), encoding="utf-8")
     risk_count = sum(item.report_group == "risk" for item in findings)
     return {
         "scan_id": scan_id,
@@ -196,6 +159,19 @@ def run_scan(*, dsl_path: Path, output_dir: Path, rules_path: Path, samples_path
         "runtime_gap_count": len(gate["runtime_gap_ids"]),
         "finding_count": risk_count,
         "total_record_count": len(findings),
-        "output_dir": str(output_dir),
+        "output_dir": str(report_dir.resolve()),
+        "report_path": str(report_path.resolve()),
         "exit_code": 1 if gate["result"] == "FAIL" else 0,
+        "_verification": verification,
+        "_test_cluster": tests,
+        "_model_advisory": model_advisory,
+        "_findings": findings,
+        "_report": report,
     }
+
+
+def _report_directory_name(dsl_path: Path) -> str:
+    """Use the uploaded workflow filename while preserving a valid Windows path."""
+    invalid = '<>:"/\\|?*\x00'
+    safe = "".join("_" if char in invalid or ord(char) < 32 else char for char in dsl_path.stem)
+    return safe.rstrip(". ") or "workflow"
