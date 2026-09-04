@@ -30,6 +30,15 @@
 
 普通只读 RAG 只有在知识内容进入模型 Prompt 时作为低等级指令边界证据，并与同一模型的用户输入边界聚合；只有继续到达副作用能力、高影响决策或明确高信任输出时才升级为独立攻击链。固定单数据集不因 DSL 未携带运行时 ACL 而逐节点报警。来源传播关闭只有在业务或输出契约明确要求引用时才形成 Finding。
 
+## 2026-09 审查后的判定收紧
+
+- 只有具备字段级 Schema（含嵌套对象字段）的 JSON/Object 输出才是“严格结构化契约”。仅设置 `outputFormat: json` 或 `outputType: Object` 不会抑制 `LLM-003` / `FLOW-009`；但若 DSL 没有导出 Schema，这三条以 `COVERAGE_GAP` 呈现，而不是把运行时自由文本当作已确认事实。只有明确声明 `text/String` 且到达副作用工具时，才确认自由文本控制链。
+- `JUDGE` 节点的名称含“审批/授权”不再自动被当成动作门。扫描器要求条件分支具备授权、权限、角色、租户、归属、策略或校验等动作相关语义，并证明到达副作用能力的相关分支均来自该条件成功分支；`approved=true` 和 `role == 'admin'` 都可以成立，单纯 `route == 'go'` 不成立。
+- 分支句柄不再接受固定魔法值作为 ELSE。只接受 DSL 中的 `handleId`、可验证的序号映射或显式 ELSE 文本；其余情况由 `FLOW-014` 报告。
+- 输入边界只接受有效的上限或非空枚举，`minLength` 不能替代长度上限；文件字段必须有真实的 MIME/扩展名允许列表和大小上限。对象输入没有 `sub/children` 字段 Schema 时成为覆盖缺口。
+- 纯文本流式输出不再自动触发富文本净化缺口；只有明确启用 HTML、Markdown、链接或 HTML 渲染时适用 `OUT-004`。
+- 知识库 ACL、检索阈值和数量在 DSL 缺失时以 `COVERAGE_GAP` 呈现，不把运行时不可见事实误报为已确认的访问控制漏洞；无效的检索数值仍由 `KB-006` 确认。
+
 新增或未来字段不能靠关键词直接提升为 `CONFIRMED`。解析器先产生 `unmapped_node_field`；确认平台语义、加入字段契约和正反例之后，规则才可消费该字段。
 
 可执行元数据位于 `rules/core-rules.yml`，平台字段绑定位于 `rules/json-dsl-bindings.yml`，适用性与排除策略位于 `rules/rule-applicability.yml`。每条规则必须恰好有一个字段绑定和一个适用性策略。路径与影响判定规则见 [applicability-model.md](applicability-model.md)。

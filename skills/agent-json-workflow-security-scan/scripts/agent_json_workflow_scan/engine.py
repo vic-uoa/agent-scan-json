@@ -19,6 +19,9 @@ INSTRUCTION_GUARDS = {"untrusted", "treat as data", "do not follow", "ignore ins
 LIMIT_KEYS = {"maxnewtoken", "maxtoken", "maxtokenlimit", "maxiterations", "max_steps", "timeout", "loopcount", "maxloopcount"}
 FALLBACK_KEYS = {"fallback", "retry", "errorstrategy", "onerror", "failclosed", "degradation"}
 CONTROL_WORDS = {"validate", "policy", "authorize", "approval", "guard", "审核", "授权", "校验", "审批"}
+AFFIRMATIVE_GATE_WORDS = {"allow", "approve", "approved", "authorize", "authorized", "permit", "pass", "success", "true", "通过", "批准", "已授权", "允许", "成功"}
+GATE_SUBJECT_WORDS = {"approve", "approval", "authorize", "authorization", "permission", "privilege", "role", "owner", "tenant", "policy", "allow", "valid", "审批", "授权", "权限", "角色", "归属", "租户", "策略", "校验", "有效"}
+ELSE_HANDLES = {"else", "default", "false", "otherwise", "否则", "默认"}
 UNTRUSTED_SOURCE_TYPES = {NodeType.INPUT.value, NodeType.KNOWLEDGE.value, NodeType.LLM.value, NodeType.AGENT.value, NodeType.TOOL.value}
 WORKFLOW_GAP_DOMAINS = {"identity_authorization", "resilience_budget", "supply_chain", "data_protection", "output_safety", "authorization_boundary"}
 
@@ -64,13 +67,138 @@ def _contains_words(value: Any, words: Iterable[str]) -> bool:
     return any(word.lower() in text for word in words)
 
 
-def _structured(node: Node) -> bool:
-    output = node.config.get("output")
+def _declares_structured_output(node: Node) -> bool:
+    """Return whether the DSL claims an object/JSON-style output.
+
+    A declared format is deliberately different from a *strict* schema.  The
+    distinction is important for model-to-tool flows: ``outputFormat: json``
+    alone does not constrain field names, nested values, or extra properties.
+    """
     return bool(
         node.config.get("isJsonOutput") is True
         or str(node.config.get("outputFormat") or "").lower() in {"json", "object"}
-        or (str(node.config.get("outputType") or "").lower() in {"object", "array<object>"} and isinstance(output, list) and output)
+        or str(node.config.get("outputType") or "").lower() in {"object", "array<object>"}
     )
+
+
+def _output_schema_issues(entries: Any, *, path: str = "output") -> list[str]:
+    """Validate the exported field-level contract used as a strict boundary."""
+    if not isinstance(entries, list) or not entries:
+        return [f"{path} 缺少字段列表"]
+    issues: list[str] = []
+    names: set[str] = set()
+    for index, item in enumerate(entries):
+        item_path = f"{path}[{index}]"
+        if not isinstance(item, dict):
+            issues.append(f"{item_path} 不是字段对象")
+            continue
+        name = str(item.get("name") or item.get("variable") or "").strip()
+        raw_type = str(item.get("type") or item.get("valueType") or item.get("value_type") or "").strip().lower()
+        if not name:
+            issues.append(f"{item_path} 缺少字段名")
+        elif name in names:
+            issues.append(f"{path} 存在重复字段 {name}")
+        else:
+            names.add(name)
+        if not raw_type:
+            issues.append(f"{item_path} 缺少字段类型")
+            continue
+        if raw_type in {"any", "unknown", "json"}:
+            issues.append(f"{item_path} 使用未封闭类型 {raw_type}")
+            continue
+        if raw_type in {"object", "dict", "map", "array<object>", "array< object >"}:
+            children = item.get("sub") if isinstance(item.get("sub"), list) else item.get("children")
+            if not isinstance(children, list) or not children:
+                issues.append(f"{item_path} 的对象值缺少嵌套字段 Schema")
+            else:
+                issues.extend(_output_schema_issues(children, path=f"{item_path}.sub"))
+    return issues
+
+
+def _has_strict_structured_contract(node: Node) -> bool:
+    return _declares_structured_output(node) and not _output_schema_issues(node.config.get("output"))
+
+
+def _declares_free_text_output(node: Node) -> bool:
+    return (
+        str(node.config.get("outputFormat") or "").strip().lower() in {"text", "string", "markdown", "html"}
+        or str(node.config.get("outputType") or "").strip().lower() in {"text", "string"}
+    )
+
+
+def _schema_issue_is_explicit_malformed(entries: Any) -> bool:
+    """Only malformed exported entries are deterministic errors; omitted schema is a gap."""
+    if not isinstance(entries, list) or not entries:
+        return False
+    names: set[str] = set()
+    for item in entries:
+        if not isinstance(item, dict):
+            return True
+        name = str(item.get("name") or item.get("variable") or "").strip()
+        raw_type = str(item.get("type") or item.get("valueType") or item.get("value_type") or "").strip()
+        if not name or not raw_type or name in names:
+            return True
+        names.add(name)
+    return False
+
+
+def _normalise_handle(value: Any) -> int | str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit() or (text.startswith("-") and text[1:].isdigit()):
+        return int(text)
+    return text.lower()
+
+
+def _edge_condition_handle(edge: Any, handles: list[int | str | None]) -> int | str | None:
+    """Resolve a condition edge using only exported handles or ordinal mapping."""
+    raw_handle = str(edge.source_handle or "").strip().lower()
+    if raw_handle in ELSE_HANDLES:
+        return raw_handle
+    match = re.search(r"-(\d+)$", raw_handle)
+    encoded = int(match.group(1)) if match else None
+    if encoded is not None and encoded in handles:
+        return encoded
+    if isinstance(edge.source_index, int):
+        if edge.source_index in handles:
+            return edge.source_index
+        if 0 <= edge.source_index < len(handles):
+            return handles[edge.source_index]
+    return encoded
+
+
+def _case_is_affirmative(case: dict[str, Any]) -> bool:
+    """Recognise a successful, action-related predicate without fixing its value vocabulary."""
+    conditions = case.get("subConditions")
+    if not isinstance(conditions, list):
+        return False
+    for condition in conditions:
+        if not isinstance(condition, dict):
+            continue
+        value = condition.get("value")
+        if value in (None, False, "", [], {}):
+            continue
+        if value is True:
+            return True
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in AFFIRMATIVE_GATE_WORDS:
+                return True
+        subject = " ".join(
+            str(condition.get(field) or "")
+            for field in ("name", "field", "variable", "left")
+        ).lower()
+        operator = str(condition.get("condition") or condition.get("operator") or "").strip().lower()
+        if operator and any(word in subject for word in GATE_SUBJECT_WORDS):
+            return True
+    return False
 
 
 def _high_trust_output(node: Node) -> bool:
@@ -136,24 +264,90 @@ def _sensitive(node: Node) -> bool:
     # Sensitivity is a data-contract property, not a bag-of-words property over
     # the entire node.  Scanning arbitrary configuration keys makes operational
     # controls such as ``maxNewToken`` look like credential-bearing data.
-    semantic_parts: list[str] = [node.title]
+    semantic_parts: list[str] = [node.title, str(node.config.get("outputName") or "")]
     for collection_name in ("paramList", "params", "output", "body", "header"):
         collection = node.config.get(collection_name)
         if not isinstance(collection, list):
             continue
-        for item in collection:
+        stack = list(collection)
+        while stack:
+            item = stack.pop()
             if not isinstance(item, dict):
                 continue
             semantic_parts.extend(
                 str(item.get(field) or "")
                 for field in ("name", "label", "description", "classification", "dataClassification")
             )
+            for child_key in ("sub", "children"):
+                children = item.get(child_key)
+                if isinstance(children, list):
+                    stack.extend(children)
     for field in ("classification", "dataClassification", "sensitivity", "pii"):
         value = node.config.get(field)
         if value not in (None, False, "", [], {}):
             semantic_parts.append(str(value))
     text = " ".join(semantic_parts).lower()
     return any(word in text for word in SENSITIVE_WORDS)
+
+
+def _is_object_type(raw_type: str) -> bool:
+    return raw_type.strip().lower() in {"object", "dict", "map", "json_object"}
+
+
+def _has_object_schema(item: dict[str, Any]) -> bool:
+    children = item.get("sub") if isinstance(item.get("sub"), list) else item.get("children")
+    return isinstance(children, list) and bool(children)
+
+
+def _has_input_boundary(item: dict[str, Any], raw_type: str) -> bool:
+    """Accept a positive upper bound or a non-empty allow-list, never a min alone."""
+    lowered = {str(key).lower(): value for key, value in item.items()}
+    for key, value in lowered.items():
+        if any(token in key for token in ("max", "limit", "maxlength", "maxitems", "maxcount", "maxsize")) and _positive_int_like(value):
+            return True
+        if any(token in key for token in ("option", "enum", "allow")) and isinstance(value, (list, tuple, set, dict)) and bool(value):
+            return True
+    return False
+
+
+def _has_file_constraints(item: dict[str, Any]) -> bool:
+    lowered = {str(key).lower(): value for key, value in item.items()}
+
+    def restrictive_type_value(value: Any) -> bool:
+        values = list(value.values()) if isinstance(value, dict) else list(value) if isinstance(value, (list, tuple, set)) else [value]
+        normalized = [str(item).strip().lower() for item in values if str(item).strip()]
+        return bool(normalized) and any(item not in {"*", "*/*"} for item in normalized)
+
+    mime_or_extension = any(
+        any(token in key for token in ("mime", "accept", "extension", "filetype", "contenttype", "allowedtype"))
+        and restrictive_type_value(value)
+        for key, value in lowered.items()
+    )
+    has_size = any(
+        any(token in key for token in ("maxsize", "filesize", "size_limit", "sizelimit")) and _positive_int_like(value)
+        for key, value in lowered.items()
+    )
+    is_multiple = lowered.get("multiple") is True or lowered.get("allowmultiple") is True
+    has_count = any(
+        any(token in key for token in ("maxcount", "maxfiles", "filecount")) and _positive_int_like(value)
+        for key, value in lowered.items()
+    )
+    return mime_or_extension and has_size and (not is_multiple or has_count)
+
+
+def _has_sensitive_input_handling(item: dict[str, Any], node: Node) -> bool:
+    declared = {"classification", "dataclassification", "sensitivity", "pii", "retention", "ttl", "redaction", "masking", "minimize", "minimization"}
+    stack = [item, node.config]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if str(key).lower() in declared and value not in (None, False, "", [], {}):
+                    return True
+                stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(current)
+    return False
 
 
 class GraphIndex:
@@ -389,6 +583,8 @@ class SecurityEngine:
                 self._knowledge_rules(node)
             if node.type == NodeType.OUTPUT.value:
                 self._output_rules(node)
+            if node.type in {NodeType.OUTPUT.value, NodeType.LLM.value, NodeType.AGENT.value, NodeType.TOOL.value, NodeType.CODE.value}:
+                self._output_schema_rules(node)
             if node.type == NodeType.CONDITION.value:
                 self._condition_rules(node)
             if node.type == NodeType.LOOP.value:
@@ -472,9 +668,19 @@ class SecurityEngine:
             if missing:
                 self.emit("FLOW-013", [node.id], f"节点不在完整可执行路径上：{'、'.join(missing)}。节点本地配置仍会审核，但跨节点攻击链不应假定可执行。", status=Status.OBSERVED, severity=Severity.LOW, report_group="posture")
         history = self.ir.raw_metadata.get("history_context_config", {})
-        if isinstance(history, dict) and history.get("enableHistory") is True:
-            if not _flatten_keys(history).intersection({"retention", "ttl", "sessionisolation", "tenant", "redaction", "maxmessages", "max_tokens"}):
-                self.emit("FLOW-015", [], "工作流启用了历史上下文，但未导出会话隔离、保留期限、脱敏或容量边界。", status=Status.COVERAGE_GAP, missing_context=["session_isolation", "retention_policy", "history_redaction"])
+        history = history if isinstance(history, dict) else {}
+        local_history_nodes = [
+            node for node in self.ir.nodes
+            if str(node.config.get("context") or "").lower() in {"session", "history", "memory"}
+            or any(key.startswith("history") or key.startswith("ishistory") for key in _flatten_keys(node.config))
+        ]
+        history_enabled = history.get("enableHistory") is True or bool(local_history_nodes)
+        policy_keys = _flatten_keys(history)
+        for item in local_history_nodes:
+            policy_keys.update(_flatten_keys(item.config))
+        if history_enabled and not policy_keys.intersection({"retention", "ttl", "sessionisolation", "tenant", "redaction", "maxmessages", "maxtokens", "max_tokens"}):
+            node_ids = [item.id for item in local_history_nodes]
+            self.emit("FLOW-015", node_ids, "工作流启用了历史或会话上下文，但未导出会话隔离、保留期限、脱敏或容量边界。", status=Status.COVERAGE_GAP, missing_context=["session_isolation", "retention_policy", "history_redaction"])
 
     def _input_rules(self, node: Node) -> None:
         variables = _input_variables(node)
@@ -486,20 +692,26 @@ class SecurityEngine:
             raw_type = str(item.get("type") or "")
             if not raw_type:
                 self.emit("IN-001", [node.id], f"输入字段 {name} 缺少类型。", status=Status.CONFIRMED)
-            limits = {key.lower() for key in item if any(part in key.lower() for part in ("max", "min", "limit", "option"))}
-            if raw_type.lower() in {"string", "text", "array", "array<object>", "array<string>"} and not limits:
+                continue
+            if _is_object_type(raw_type) and not _has_object_schema(item):
+                self.emit("IN-001", [node.id], f"对象输入字段 {name} 未导出子字段 Schema，无法验证允许的键和嵌套类型。", status=Status.COVERAGE_GAP, missing_context=["input_object_schema"])
+            if raw_type.lower() in {"string", "text", "array", "array<object>", "array<string>", "array<number>"} and not _has_input_boundary(item, raw_type):
                 self.emit("IN-002", [node.id], f"输入字段 {name} 未声明长度、数量或枚举边界。", status=Status.OBSERVED)
             if "file" in raw_type.lower():
-                text = str(item).lower()
-                if not all(word in text for word in ("type", "size")):
+                if not _has_file_constraints(item):
                     self.emit("IN-003", [node.id], f"文件字段 {name} 的类型或大小约束不完整。", status=Status.CONFIRMED)
-            if any(word in name.lower() for word in SENSITIVE_WORDS):
+            if any(word in name.lower() for word in SENSITIVE_WORDS) and not _has_sensitive_input_handling(item, node):
                 self.emit("IN-005", [node.id], f"入口字段 {name} 具有敏感数据语义，DSL 未声明分类或最小化策略。", status=Status.COVERAGE_GAP, missing_context=["data_classification"])
 
     def _model_rules(self, node: Node) -> None:
         prompt = str(node.config.get("prompt") or "")
         impact = self.impact(node)
-        input_refs = [ref for ref in node.variable_refs if self.graph.nodes.get(ref.producer_node_id) and self.graph.nodes[ref.producer_node_id].type == NodeType.INPUT.value]
+        input_refs = [
+            ref for ref in node.variable_refs
+            if self.graph.nodes.get(ref.producer_node_id)
+            and self.graph.nodes[ref.producer_node_id].type == NodeType.INPUT.value
+            and ref.consumer_field.lower() == "prompt"
+        ]
         if input_refs and not _contains_words(prompt, INSTRUCTION_GUARDS):
             self.emit("IN-004", [input_refs[0].producer_node_id, node.id], "入口数据进入模型 Prompt，未发现明确的不可信数据边界。", status=Status.OBSERVED)
             self.emit("LLM-001", [input_refs[0].producer_node_id, node.id], "Prompt 未声明用户内容不能覆盖系统目标或触发未授权动作。", status=Status.OBSERVED)
@@ -584,7 +796,12 @@ class SecurityEngine:
         if effectful and node.type == NodeType.AGENT.value:
             self.emit("TOOL-010", [node.id], "自主 Agent 可选择副作用工具，DSL 未提供不可绕过的动作授权门。", status=Status.PROBABLE, confidence=0.84, missing_context=["runtime_action_policy"])
         if any(spec["kind"] == "workflow" for spec in specs):
-            self.emit("FLOW-011", [node.id], "Agent 可调用子工作流，但委派身份、被调输入契约和失败语义不在 DSL 中。", status=Status.COVERAGE_GAP, missing_context=["callee_contract", "delegated_identity"])
+            message = (
+                "Agent 可调用子工作流，但委派身份、被调输入契约和失败语义不在 DSL 中。"
+                if node.type == NodeType.AGENT.value
+                else "子工作流调用未导出被调输入输出契约、委派身份或失败语义。"
+            )
+            self.emit("FLOW-011", [node.id], message, status=Status.COVERAGE_GAP, missing_context=["callee_contract", "delegated_identity"])
         if self.ir.raw_metadata.get("secret_locations") and any(location.startswith(node.json_pointer) for location in self.ir.raw_metadata["secret_locations"]):
             self.emit("TOOL-012", [node.id], "工具节点包含疑似真实密钥或授权材料。", status=Status.CONFIRMED)
         agent_visible_auth = [param for spec in specs for param in spec["parameters"] if param.get("agent_visible") is True and any(word in str(param.get("name") or "").lower() for word in ("authorization", "api-key", "apikey", "token", "secret"))]
@@ -598,26 +815,27 @@ class SecurityEngine:
             configs = node.config.get("recallTools", [])
         configs = configs if isinstance(configs, list) else []
         knowledge_codes = [str(item.get("knowledgeCode") or "").strip() for item in configs if isinstance(item, dict) and str(item.get("knowledgeCode") or "").strip()]
-        dynamic_scope = any(code.startswith("${") or "{{" in code for code in knowledge_codes)
+        dynamic_scope = any("${" in code or "{{" in code for code in knowledge_codes)
         if dynamic_scope:
             self.emit("KB-001", [node.id], "知识数据集标识可被动态表达式控制。", status=Status.CONFIRMED)
         if dynamic_scope or (len(set(knowledge_codes)) > 1 and _sensitive(node)):
-            self.emit("KB-002", [node.id], "动态或敏感多数据集范围未显示确定性的业务/租户过滤。", status=Status.PROBABLE, confidence=0.82, missing_context=["knowledge_acl", "tenant_filter"])
+            self.emit("KB-002", [node.id], "动态或敏感多数据集范围的租户 ACL 和业务过滤未出现在 DSL 中。", status=Status.COVERAGE_GAP, missing_context=["knowledge_acl", "tenant_filter"])
         service = node.config.get("serviceConfig") if isinstance(node.config.get("serviceConfig"), dict) else {}
-        has_count = bool(service.get("recallCount") or any(item.get("reCallNum") for item in configs if isinstance(item, dict)))
-        has_score = isinstance(service.get("sortScore"), (int, float))
+        configured_counts = [service.get("recallCount"), *(item.get("reCallNum") for item in configs if isinstance(item, dict))]
+        has_count = any(_positive_int_like(value) for value in configured_counts if value is not None)
+        has_score = _unit_score_like(service.get("sortScore"))
         if (not has_count or not has_score) and (impact.consequential or _sensitive(node)):
-            self.emit("KB-005", [node.id], "高影响或敏感知识路径的检索数量、相关性阈值未完整声明。", status=Status.PROBABLE, confidence=0.8)
+            self.emit("KB-005", [node.id], "高影响或敏感知识路径的检索数量、相关性阈值未完整声明。", status=Status.COVERAGE_GAP, missing_context=["retrieval_limit", "retrieval_relevance_threshold"])
         valid_dataset = any(isinstance(item, dict) and str(item.get("knowledgeCode") or "").strip() for item in configs)
         if not valid_dataset:
             self.emit("KB-006", [node.id], "知识节点未导出固定的 knowledgeCode。", status=Status.CONFIRMED)
-        invalid_counts = [item.get("reCallNum") for item in configs if isinstance(item, dict) and item.get("reCallNum") is not None and not _positive_int_like(item.get("reCallNum"))]
+        invalid_counts = [value for value in configured_counts if value is not None and not _positive_int_like(value)]
         score = service.get("sortScore")
         if invalid_counts or (score is not None and not _unit_score_like(score)):
             self.emit("KB-006", [node.id], "知识检索数量或相关性阈值超出有效范围。", status=Status.CONFIRMED)
 
     def _output_rules(self, node: Node) -> None:
-        if not _structured(node):
+        if not _declares_structured_output(node):
             if _high_trust_output(node):
                 self.emit("OUT-001", [node.id], "高信任或机器消费输出未声明可验证的结构化契约。", status=Status.PROBABLE, severity=Severity.MEDIUM, confidence=0.85, report_group="risk")
             else:
@@ -627,43 +845,47 @@ class SecurityEngine:
         output_format = str(node.config.get("outputFormat") or "").lower()
         explicit_rich_output = (
             output_format in {"html", "markdown"}
-            or node.config.get("isStreamingOutput") is True
             or node.config.get("renderAsHtml") is True
             or node.config.get("renderLinks") is True
         )
         if explicit_rich_output:
-            self.emit("OUT-004", [node.id], "输出可能包含富文本、链接或流式内容，净化策略不可验证。", status=Status.COVERAGE_GAP, missing_context=["renderer_sanitization"])
-        output = node.config.get("output")
-        if _structured(node):
-            if not isinstance(output, list) or not output:
-                self.emit("OUT-006", [node.id], "节点声明结构化输出，但没有字段级 Schema。", status=Status.CONFIRMED)
-            else:
-                names = [str(item.get("name") or "") for item in output if isinstance(item, dict)]
-                malformed = len(names) != len(output) or any(not name for name in names) or any(not item.get("type") for item in output if isinstance(item, dict)) or len(names) != len(set(names))
-                if malformed:
-                    self.emit("OUT-006", [node.id], "结构化输出存在空字段名、缺失类型、重复字段或非对象定义。", status=Status.CONFIRMED)
+            self.emit("OUT-004", [node.id], "输出明确启用富文本或链接渲染，净化策略不可验证。", status=Status.COVERAGE_GAP, missing_context=["renderer_sanitization"])
+
+    def _output_schema_rules(self, node: Node) -> None:
+        """Apply the same strict schema test to outputs produced by every node family."""
+        if not _declares_structured_output(node):
+            return
+        issues = _output_schema_issues(node.config.get("output"))
+        if issues:
+            preview = "；".join(issues[:2])
+            suffix = "；其余字段问题见 DSL 证据" if len(issues) > 2 else ""
+            status = Status.CONFIRMED if _schema_issue_is_explicit_malformed(node.config.get("output")) else Status.COVERAGE_GAP
+            missing_context = [] if status == Status.CONFIRMED else ["exported_output_schema"]
+            self.emit("OUT-006", [node.id], f"节点声明结构化输出，但字段级 Schema 不完整：{preview}{suffix}。", status=status, missing_context=missing_context)
 
     def _condition_rules(self, node: Node) -> None:
         impact = self.impact(node)
         integrity_group = "risk" if impact.consequential else "posture"
         integrity_severity = None if impact.consequential else Severity.LOW
         cases = [item for item in node.config.get("conditionList", []) if isinstance(item, dict)] if isinstance(node.config.get("conditionList"), list) else []
-        handles = [item.get("handleId") for item in cases]
+        handles = [_normalise_handle(item.get("handleId")) for item in cases]
         outgoing = self.graph.out_edges.get(node.id, [])
-        def encoded_handle(edge: Any) -> int | None:
-            match = re.search(r"-(\d+)$", str(edge.source_handle or ""))
-            return int(match.group(1)) if match else None
-        effective_handles: list[int | None] = []
+        effective_handles: list[int | str | None] = []
         mismatches = []
-        allowed = set(handles) | {14}
+        allowed = {handle for handle in handles if handle is not None}
+        invalid_case_handles = len(handles) != len(cases) or len(allowed) != len(handles)
         for edge in outgoing:
-            encoded = encoded_handle(edge)
+            raw_handle = str(edge.source_handle or "").strip().lower()
+            match = re.search(r"-(\d+)$", raw_handle)
+            encoded = int(match.group(1)) if match else None
             ordinal_handle = handles[edge.source_index] if isinstance(edge.source_index, int) and 0 <= edge.source_index < len(handles) else None
             compatible = encoded == edge.source_index or (ordinal_handle is not None and encoded == ordinal_handle)
             if encoded is not None and edge.source_index is not None and not compatible:
                 mismatches.append({"edge_id": edge.id, "sourceIndex": edge.source_index, "sourceHandleIndex": encoded})
-            effective_handles.append(encoded if encoded in allowed else ordinal_handle if ordinal_handle in allowed else edge.source_index)
-        if len(handles) != len(set(handles)):
+            effective_handles.append(_edge_condition_handle(edge, handles))
+        if invalid_case_handles:
+            self.emit("FLOW-014", [node.id], "条件分支缺少 handleId 或存在重复 handleId，无法建立唯一的分支契约。", status=Status.CONFIRMED, severity=integrity_severity, report_group=integrity_group)
+        elif len(handles) != len(set(handles)):
             self.emit("FLOW-014", [node.id], "条件分支存在重复 handleId。", status=Status.CONFIRMED, severity=integrity_severity, report_group=integrity_group)
         if mismatches:
             self.emit(
@@ -675,9 +897,9 @@ class SecurityEngine:
                 report_group="posture",
                 remediation=["核对平台分支路由优先级，并让 sourceIndex 与 sourceHandle 通过同一个 handleId 或明确的分支序号映射表达。"],
             )
-        invalid_edges = [item for item in effective_handles if item not in allowed]
+        invalid_edges = [item for item in effective_handles if item not in allowed and item not in ELSE_HANDLES]
         if invalid_edges:
-            self.emit("FLOW-014", [node.id], f"出边 sourceIndex 未对应任何条件或 ELSE：{sorted(set(invalid_edges), key=str)}。", status=Status.CONFIRMED, severity=integrity_severity, report_group=integrity_group)
+            self.emit("FLOW-014", [node.id], f"出边 sourceIndex/sourceHandle 未对应任何已导出的条件或显式 ELSE：{sorted(set(invalid_edges), key=str)}。", status=Status.CONFIRMED, severity=integrity_severity, report_group=integrity_group)
         missing_edges = [item for item in handles if item not in effective_handles]
         if missing_edges or not outgoing:
             self.emit("FLOW-014", [node.id], "至少一个条件分支没有对应出边，或条件节点完全没有出边。", status=Status.OBSERVED, severity=integrity_severity, report_group=integrity_group)
@@ -702,6 +924,37 @@ class SecurityEngine:
         elif not self.graph.path(starts[0].id, ends[0].id):
             self.emit("FLOW-016", [node.id, starts[0].id, ends[0].id], "循环入口无法通过内部图到达循环输出。", status=Status.CONFIRMED)
 
+    def _is_verified_action_gate_for_sink(self, node: Node, sink: Node) -> bool:
+        """Recognise an action gate only when its *allow* branch exclusively leads to the sink.
+
+        A name such as "approval" is not a control by itself.  We require a
+        well-formed JUDGE node, an affirmative branch, and proof that no other
+        branch of that JUDGE can reach the same side effect.  Runtime policy is
+        still reported separately where the DSL cannot prove identity/object
+        authorization.
+        """
+        if node.type != NodeType.CONDITION.value or not _contains_words(f"{node.title} {node.config}", CONTROL_WORDS):
+            return False
+        raw_cases = node.config.get("conditionList")
+        cases = [item for item in raw_cases if isinstance(item, dict)] if isinstance(raw_cases, list) else []
+        if not cases or len(cases) != len(raw_cases):
+            return False
+        handles = [_normalise_handle(item.get("handleId")) for item in cases]
+        if any(handle is None for handle in handles) or len(set(handles)) != len(handles):
+            return False
+        affirmative = {handle for case, handle in zip(cases, handles) if _case_is_affirmative(case)}
+        if not affirmative:
+            return False
+        branches_to_sink: list[int | str | None] = []
+        for edge in self.graph.out_edges.get(node.id, []):
+            if not self.graph.path(edge.target, sink.id, control_only=True):
+                continue
+            branch = _edge_condition_handle(edge, handles)
+            if branch is None or branch in ELSE_HANDLES:
+                return False
+            branches_to_sink.append(branch)
+        return bool(branches_to_sink) and all(branch in affirmative for branch in branches_to_sink)
+
     def _cross_rules(self) -> None:
         nodes = self.ir.nodes
         inputs = [item for item in nodes if item.type == NodeType.INPUT.value]
@@ -709,9 +962,9 @@ class SecurityEngine:
         models = [item for item in nodes if item.type in {NodeType.LLM.value, NodeType.AGENT.value}]
         tools = [item for item in nodes if item.type in {NodeType.TOOL.value, NodeType.CODE.value} and (item.effectful or item.high_impact)]
         outputs = [item for item in nodes if item.type == NodeType.OUTPUT.value]
-        controls = {item.id for item in nodes if item.type == NodeType.CONDITION.value and _contains_words(f"{item.title} {item.config}", CONTROL_WORDS)}
         for source in inputs:
             for sink in tools:
+                controls = {item.id for item in nodes if self._is_verified_action_gate_for_sink(item, sink)}
                 unguarded = self.graph.path(source.id, sink.id, control_only=True, excluded=controls)
                 guarded = next((
                     [*first, *second[1:]]
@@ -761,16 +1014,26 @@ class SecurityEngine:
                         if second:
                             self.emit("FLOW-005", [*path, *second[1:]], "外部工具内容可经模型影响副作用能力。", status=Status.PROBABLE, confidence=0.9)
         for model in models:
-            if _structured(model):
+            if _has_strict_structured_contract(model):
                 continue
             for tool in [item for item in nodes if item.type == NodeType.TOOL.value]:
                 path = self.graph.path(model.id, tool.id, data_only=True)
                 if path:
                     consequential = tool.effectful or tool.high_impact
-                    status = Status.CONFIRMED if consequential else Status.OBSERVED
-                    severity = None if consequential else Severity.MEDIUM
-                    self.emit("FLOW-009", path, "模型自由文本输出进入工具参数。", status=status, severity=severity)
-                    self.emit("LLM-003", path, "机器消费模型输出，但上游没有严格结构化契约。", status=status, severity=severity)
+                    if _declares_free_text_output(model):
+                        status = Status.CONFIRMED if consequential else Status.OBSERVED
+                        severity = None if consequential else Severity.MEDIUM
+                        flow_message = "模型明确声明自由文本输出进入工具参数。"
+                        llm_message = "机器消费模型明确声明为自由文本，且上游没有严格结构化契约。"
+                        missing_context: list[str] = []
+                    else:
+                        status = Status.COVERAGE_GAP
+                        severity = None
+                        flow_message = "模型输出进入工具参数，但 DSL 未导出可验证的严格字段 Schema，无法确认实际运行时是否受结构化响应约束。"
+                        llm_message = "机器消费模型输出，但 DSL 未导出可验证的严格结构化契约。"
+                        missing_context = ["model_output_schema"]
+                    self.emit("FLOW-009", path, flow_message, status=status, severity=severity, missing_context=missing_context)
+                    self.emit("LLM-003", path, llm_message, status=status, severity=severity, missing_context=missing_context)
         conditions = [item for item in nodes if item.type == NodeType.CONDITION.value]
         high_impact_tools = [item for item in nodes if item.type in {NodeType.TOOL.value, NodeType.CODE.value} and item.high_impact]
         for model in models:
@@ -779,7 +1042,7 @@ class SecurityEngine:
                 if not first:
                     continue
                 for tool in high_impact_tools:
-                    second = self.graph.path(condition.id, tool.id)
+                    second = self.graph.path(condition.id, tool.id, control_only=True)
                     if second:
                         self.emit("LLM-006", [*first, *second[1:]], "模型输出参与通往高影响能力的分支选择；模型判断不能替代确定性授权。", status=Status.PROBABLE, confidence=0.86, missing_context=["business_authorization_policy"])
         sensitive_sources = [item for item in nodes if _sensitive(item)]
@@ -796,7 +1059,8 @@ class SecurityEngine:
         for kb in knowledge:
             for output in outputs:
                 path = self.graph.path(kb.id, output.id, data_only=True)
-                source_disabled = kb.config.get("serviceConfig", {}).get("whetherKnlSource") is False
+                service = kb.config.get("serviceConfig") if isinstance(kb.config.get("serviceConfig"), dict) else {}
+                source_disabled = service.get("whetherKnlSource") is False
                 if path and _citation_required(output) and source_disabled:
                     self.emit("OUT-005", path, "知识型输出明确要求引用，但路径关闭来源传播，无法建立引用证据。", status=Status.CONFIRMED)
                 elif path and source_disabled:

@@ -47,7 +47,7 @@ class RuleApplicabilityMatrixTests(unittest.TestCase):
         tool_ref = VariableRef("model", "answer", "tool", "/nodes/2/body", "body.command")
         nodes = [
             Node("start", "HEAD", NodeType.INPUT.value, "开始", "/nodes/0", {"paramList": [{"name": "question", "type": "String", "maxLength": 100}]}),
-            Node("model", "MODEL", NodeType.LLM.value, "模型", "/nodes/1", {"prompt": "${question}", "modelConfig": {"maxNewToken": 100}, "fallback": "fail_closed"}, variable_refs=[in_ref]),
+            Node("model", "MODEL", NodeType.LLM.value, "模型", "/nodes/1", {"prompt": "${question}", "outputFormat": "text", "modelConfig": {"maxNewToken": 100}, "fallback": "fail_closed"}, variable_refs=[in_ref]),
             Node("tool", "API_PLUGIN", NodeType.TOOL.value, "写操作", "/nodes/2", {"timeout": 3, "signature": "trusted"}, tool_specs=[spec(method="POST")], variable_refs=[tool_ref], external=True, effectful=True, high_impact=True),
             Node("out", "TEMPLATE", NodeType.OUTPUT.value, "结束", "/nodes/3", {"outputType": "Object", "output": [{"name": "result", "type": "String"}]}),
         ]
@@ -67,6 +67,34 @@ class RuleApplicabilityMatrixTests(unittest.TestCase):
         findings = self.execute(nodes, [Edge("e0", "start", "model"), Edge("e1", "model", "tool"), Edge("e2", "tool", "out")], [tool_ref])
         self.assertFalse({"FLOW-009", "LLM-003"} & rule_ids(findings))
 
+    def test_json_declaration_without_field_schema_is_not_treated_as_strict_contract(self) -> None:
+        tool_ref = VariableRef("model", "command", "tool", "/nodes/2/body", "body.command")
+        nodes = [
+            Node("start", "HEAD", NodeType.INPUT.value, "开始", "/nodes/0", {"paramList": [{"name": "question", "type": "String", "maxLength": 100}]}),
+            Node("model", "MODEL", NodeType.LLM.value, "模型", "/nodes/1", {"outputFormat": "json", "modelConfig": {"maxNewToken": 100}, "fallback": "fail_closed"}),
+            Node("tool", "API_PLUGIN", NodeType.TOOL.value, "写操作", "/nodes/2", {"timeout": 3, "signature": "trusted"}, tool_specs=[spec(method="POST")], variable_refs=[tool_ref], external=True, effectful=True),
+            Node("out", "TEMPLATE", NodeType.OUTPUT.value, "结束", "/nodes/3", {"outputType": "Object", "output": [{"name": "result", "type": "String"}]}),
+        ]
+        findings = self.execute(nodes, [Edge("e0", "start", "model"), Edge("e1", "model", "tool"), Edge("e2", "tool", "out")], [tool_ref])
+        self.assertTrue({"FLOW-009", "LLM-003", "OUT-006"}.issubset(rule_ids(findings)))
+        schema_gap = next(item for item in findings if "LLM-003" in {item.rule_id, *item.related_rule_ids})
+        self.assertEqual(schema_gap.status, "COVERAGE_GAP")
+
+    def test_plain_streaming_output_is_not_rich_text_by_default(self) -> None:
+        nodes = [
+            Node("start", "HEAD", NodeType.INPUT.value, "开始", "/nodes/0", {"paramList": [{"name": "x", "type": "String", "maxLength": 20}]}),
+            Node("out", "TEMPLATE", NodeType.OUTPUT.value, "结束", "/nodes/1", {"outputType": "String", "isStreamingOutput": True}),
+        ]
+        self.assertNotIn("OUT-004", rule_ids(self.execute(nodes, [Edge("e0", "start", "out")])))
+
+    def test_missing_exported_schema_is_a_gap_but_malformed_schema_is_confirmed(self) -> None:
+        no_schema = Node("model", "MODEL", NodeType.LLM.value, "模型", "/nodes/0", {"outputFormat": "json"})
+        gap = next(item for item in self.execute([no_schema], []) if item.rule_id == "OUT-006")
+        self.assertEqual(gap.status, "COVERAGE_GAP")
+        malformed = Node("model", "MODEL", NodeType.LLM.value, "模型", "/nodes/0", {"outputFormat": "json", "output": [{"name": "result"}, {"name": "result", "type": "String"}]})
+        confirmed = next(item for item in self.execute([malformed], []) if item.rule_id == "OUT-006")
+        self.assertEqual(confirmed.status, "CONFIRMED")
+
     def test_dynamic_network_target_requires_untrusted_binding(self) -> None:
         url_ref = VariableRef("start", "url", "tool", "/nodes/1/query", "query.url")
         base_nodes = [
@@ -78,6 +106,29 @@ class RuleApplicabilityMatrixTests(unittest.TestCase):
         self.assertNotIn("TOOL-003", rule_ids(self.execute(base_nodes, edges)))
         bound_nodes = [base_nodes[0], Node(**{**base_nodes[1].__dict__, "variable_refs": [url_ref]}), base_nodes[2]]
         self.assertIn("TOOL-003", rule_ids(self.execute(bound_nodes, edges, [url_ref])))
+
+    def test_input_bounds_file_constraints_and_sensitive_classification_are_distinct(self) -> None:
+        start = Node("start", "HEAD", NodeType.INPUT.value, "开始", "/nodes/0", {"paramList": [
+            {"name": "comment", "type": "String", "minLength": 1},
+            {"name": "upload", "type": "File", "maxSize": 1024},
+            {"name": "profile", "type": "Object"},
+            {"name": "access_token", "type": "String", "maxLength": 80, "dataClassification": "secret"},
+        ]})
+        out = Node("out", "TEMPLATE", NodeType.OUTPUT.value, "结束", "/nodes/1", {"outputType": "Object", "output": [{"name": "result", "type": "String"}]})
+        ids = rule_ids(self.execute([start, out], [Edge("e0", "start", "out")]))
+        self.assertTrue({"IN-001", "IN-002", "IN-003"}.issubset(ids))
+        self.assertNotIn("IN-005", ids)
+
+    def test_invalid_retrieval_values_are_not_accepted_as_retrieval_bounds(self) -> None:
+        knowledge = Node("kb", "NEW_KNOWLEDGE", NodeType.KNOWLEDGE.value, "客户知识库", "/nodes/0", {
+            "recallToolConfig": [{"knowledgeCode": "fixed-${tenant}", "reCallNum": "zero"}],
+            "serviceConfig": {"recallCount": -1, "sortScore": True},
+        })
+        findings = self.execute([knowledge], [])
+        ids = rule_ids(findings)
+        self.assertTrue({"KB-001", "KB-002", "KB-005", "KB-006"}.issubset(ids))
+        kb_acl = next(item for item in findings if "KB-002" in {item.rule_id, *item.related_rule_ids})
+        self.assertEqual(kb_acl.status, "COVERAGE_GAP")
 
     def test_runtime_gaps_are_aggregated_by_control_domain(self) -> None:
         nodes = [
@@ -102,6 +153,26 @@ class RuleApplicabilityMatrixTests(unittest.TestCase):
         self.assertFalse({"FLOW-004", "FLOW-006"} & rule_ids(self.execute(nodes, guarded_edges)))
         bypass_edges = [*guarded_edges, Edge("e3", "start", "tool")]
         self.assertIn("FLOW-006", rule_ids(self.execute(nodes, bypass_edges)))
+
+    def test_approval_name_without_an_affirmative_branch_is_not_a_gate(self) -> None:
+        nodes = [
+            Node("start", "HEAD", NodeType.INPUT.value, "开始", "/nodes/0", {"paramList": [{"name": "x", "type": "String", "maxLength": 20}]}),
+            Node("named-only", "JUDGE", NodeType.CONDITION.value, "授权审批", "/nodes/1", {"conditionList": [{"name": "IF", "handleId": 0, "subConditions": [{"name": "route", "condition": "EQ", "value": "go"}]}]}),
+            Node("tool", "API_PLUGIN", NodeType.TOOL.value, "付款", "/nodes/2", {"timeout": 3, "signature": "trusted"}, tool_specs=[spec(method="POST")], external=True, effectful=True, high_impact=True),
+            Node("out", "TEMPLATE", NodeType.OUTPUT.value, "结束", "/nodes/3", {"outputType": "Object", "output": [{"name": "result", "type": "String"}]}),
+        ]
+        edges = [Edge("e0", "start", "named-only"), Edge("e1", "named-only", "tool", source_handle="named-only-0", source_index=0), Edge("e2", "tool", "out")]
+        self.assertIn("FLOW-004", rule_ids(self.execute(nodes, edges)))
+
+    def test_role_based_authorization_branch_is_a_valid_action_gate(self) -> None:
+        nodes = [
+            Node("start", "HEAD", NodeType.INPUT.value, "开始", "/nodes/0", {"paramList": [{"name": "x", "type": "String", "maxLength": 20}]}),
+            Node("role-gate", "JUDGE", NodeType.CONDITION.value, "权限校验", "/nodes/1", {"conditionList": [{"name": "IF", "handleId": 0, "subConditions": [{"name": "userRole", "condition": "EQ", "value": "admin"}]}]}),
+            Node("tool", "API_PLUGIN", NodeType.TOOL.value, "付款", "/nodes/2", {"timeout": 3, "signature": "trusted"}, tool_specs=[spec(method="POST")], external=True, effectful=True, high_impact=True),
+            Node("out", "TEMPLATE", NodeType.OUTPUT.value, "结束", "/nodes/3", {"outputType": "Object", "output": [{"name": "result", "type": "String"}]}),
+        ]
+        edges = [Edge("e0", "start", "role-gate"), Edge("e1", "role-gate", "tool", source_handle="role-gate-0", source_index=0), Edge("e2", "tool", "out")]
+        self.assertFalse({"FLOW-004", "FLOW-006"} & rule_ids(self.execute(nodes, edges)))
 
     def test_tool_output_only_escalates_when_it_reaches_effect(self) -> None:
         tool_to_model = VariableRef("reader", "content", "model", "/nodes/2/prompt", "prompt")
