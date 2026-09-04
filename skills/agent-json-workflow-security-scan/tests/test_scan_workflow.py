@@ -254,6 +254,12 @@ class ScannerTests(unittest.TestCase):
             self.assertTrue(machine_report["workflow"]["nodes"])
             self.assertTrue(machine_report["workflow"]["edges"])
 
+    def test_report_module_has_no_markdown_renderer(self) -> None:
+        import agent_json_workflow_scan.report as report_module
+
+        self.assertFalse(hasattr(report_module, "report_markdown"))
+        self.assertFalse(hasattr(report_module, "attack_surface_markdown"))
+
     def test_visuals_preserve_canvas_layout_and_focus_risk_chains(self) -> None:
         workflow = {
             "nodes": [

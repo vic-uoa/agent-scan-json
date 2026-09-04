@@ -13,6 +13,13 @@ description: 对内部 JSON 工作流 DSL 做确定性静态安全扫描，覆�
 4. 运行确定性规则与输入簇生成。模型不得创建、删除、升级、降级或抑制 Finding。需要额外语义覆盖时，可把模型生成的建议文件通过 `--model-advisory` 导入；只接受通过 Schema、种子、节点、规则和 Finding 引用校验的惰性测试、复核问题与非权威措辞。
 5. 扫描器在内存中完成 Finding、风险门禁、扫描完整性和引用校验，只向报告目录写入最终 HTML。向用户解释报告时先说明发布门禁和扫描完整性，再结合完整工作流图与每条风险对应的逻辑链图说明证据。
 
+## 报告交付约束（不可替代）
+
+- 必须调用 `scripts/scan_workflow.py scan` 生成报告；聊天中的 Markdown 说明、表格或代码块只能作为简短摘要，绝不能替代扫描器最终报告。
+- 最终可交付报告仅能是一个自包含 HTML 文件：`<报告根目录>/<工作流文件名>/<工作流文件名>-安全扫描报告.html`。不得生成、交付或宣称 Markdown 报告、`report.md`、`workflow-ir.json`、独立 SVG/PNG 或其他中间文件。
+- 命令完成后必须核对 `report_path` 的扩展名为 `.html`，并核对报告目录只包含该一个 HTML 文件；若不满足，应视为扫描失败并修复后再交付。
+- 给用户的最终回复必须提供这个 HTML 报告的实际路径；不得仅在聊天窗口中粘贴扫描结论。
+
 ```powershell
 python scripts/scan_workflow.py scan `
   --dsl <workflow.json> `
