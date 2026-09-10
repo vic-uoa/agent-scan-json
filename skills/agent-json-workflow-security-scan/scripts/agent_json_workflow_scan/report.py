@@ -27,6 +27,7 @@ CONTROL_DOMAIN_ZH = {
 MISSING_CONTEXT_ZH = {
     "business_authorization_policy": "业务授权策略", "callee_contract": "被调用工作流契约",
     "delegated_identity": "委派身份", "code_output_contract": "代码输出契约",
+    "code_runtime_policy": "代码输入来源与运行时约束", "code_call_resolution": "动态调用语义",
     "data_classification": "数据分类", "intermediate_output_audience": "中间输出受众",
     "redaction_policy": "脱敏策略", "knowledge_acl": "知识库访问控制",
     "tenant_filter": "租户过滤", "language_specific_parser": "对应语言的静态解析器",

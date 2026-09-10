@@ -9,6 +9,7 @@ import re
 import yaml
 
 from .models import Fact, Finding, Node, NodeType, Severity, Status, WorkflowIR, stable_id
+from .semantics import analyze_python, field_matches
 
 
 SEVERITY_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
@@ -179,26 +180,27 @@ def _case_is_affirmative(case: dict[str, Any]) -> bool:
     conditions = case.get("subConditions")
     if not isinstance(conditions, list):
         return False
+    checks = []
     for condition in conditions:
         if not isinstance(condition, dict):
-            continue
+            return False
         value = condition.get("value")
-        if value in (None, False, "", [], {}):
-            continue
-        if value is True:
-            return True
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in AFFIRMATIVE_GATE_WORDS:
-                return True
         subject = " ".join(
             str(condition.get(field) or "")
             for field in ("name", "field", "variable", "left")
         ).lower()
         operator = str(condition.get("condition") or condition.get("operator") or "").strip().lower()
-        if operator and any(word in subject for word in GATE_SUBJECT_WORDS):
-            return True
-    return False
+        # NE/contains/truthiness and arbitrary positive values cannot prove allow.
+        related = any(word in subject for word in GATE_SUBJECT_WORDS)
+        positive = value is True or isinstance(value, str) and value.strip().lower() in AFFIRMATIVE_GATE_WORDS | {"admin", "owner"}
+        checks.append(related and operator in {"eq", "==", "=", "equals"} and positive)
+    raw_logic = case.get("logicalOperator") or case.get("logic") or case.get("operator")
+    if len(checks) > 1 and not raw_logic:
+        return False
+    logic = str(raw_logic or "AND").upper()
+    if logic not in {"AND", "OR", "&&", "||"}:
+        return False
+    return bool(checks) and (all(checks) if logic in {"OR", "||"} else any(checks))
 
 
 def _high_trust_output(node: Node) -> bool:
@@ -371,18 +373,20 @@ class GraphIndex:
         if data_only and control_only:
             raise ValueError("data_only and control_only are mutually exclusive")
         adjacency = self.data if data_only else self.control if control_only else {key: self.control[key] | self.data[key] for key in self.nodes}
-        queue: deque[list[str]] = deque([[source]])
-        seen = {source}
+        queue = deque([source])
+        parents: dict[str, str | None] = {source: None}
         while queue:
-            path = queue.popleft()
-            if path[-1] == target:
-                return path
-            if len(path) > 64:
-                continue
-            for nxt in adjacency.get(path[-1], set()):
-                if nxt not in seen and nxt not in excluded:
-                    seen.add(nxt)
-                    queue.append([*path, nxt])
+            current = queue.popleft()
+            if current == target:
+                path = []
+                while current is not None:
+                    path.append(current)
+                    current = parents[current]
+                return list(reversed(path))
+            for nxt in sorted(adjacency.get(current, set())):
+                if nxt not in parents and nxt not in excluded:
+                    parents[nxt] = current
+                    queue.append(nxt)
         return None
 
     def any_path(self, sources: Iterable[Node], targets: Iterable[Node], *, data_only: bool = False, control_only: bool = False, excluded: set[str] | None = None) -> list[str] | None:
@@ -501,24 +505,34 @@ class SecurityEngine:
     def _reference_field_names(self, ref: Any) -> set[str]:
         names = {str(ref.consumer_field or "").lower(), str(ref.variable_name or "").lower()}
         producer = self.graph.nodes.get(ref.producer_node_id)
-        if not producer or producer.type != NodeType.INPUT.value:
+        if not producer:
             return names
-        root = str(ref.variable_name or "").split(".", 1)[0]
-        variables = producer.config.get("paramList")
+        parts = str(ref.variable_name or "").split(".")
+        root = parts[0]
+        variables = producer.config.get("paramList" if producer.type == NodeType.INPUT.value else "output")
         if not isinstance(variables, list):
             return names
-        entries = variables if not root else [
+        entries = variables if not root or root == producer.config.get("outputName") else [
             item for item in variables
             if isinstance(item, dict) and str(item.get("name") or item.get("variable") or "") == root
         ]
         if not entries:
             return names
+        # A leaf binding must not inherit a sibling's URL/secret semantics.
+        for part in parts[1:]:
+            if root == producer.config.get("outputName"):
+                entries = [entry for entry in entries if str(entry.get("name") or entry.get("variable") or "") == part]
+                root = ""
+                continue
+            entries = [child for entry in entries for child in (entry.get("sub") or entry.get("children") or [])
+                       if isinstance(child, dict) and str(child.get("name") or child.get("variable") or "") == part]
         stack = list(entries)
         while stack:
             current = stack.pop()
             if not isinstance(current, dict):
                 continue
             names.add(str(current.get("name") or current.get("variable") or "").lower())
+            names.update(str(current.get(key) or "").lower() for key in ("classification", "dataClassification", "sensitivity"))
             for key in ("sub", "children"):
                 value = current.get(key)
                 if isinstance(value, list):
@@ -530,15 +544,33 @@ class SecurityEngine:
         refs = []
         for ref in node.variable_refs:
             producer = self.graph.nodes.get(ref.producer_node_id)
-            if not producer or producer.type not in UNTRUSTED_SOURCE_TYPES:
+            if not producer:
+                continue
+            sources = [item for item in self.ir.nodes if item.type in UNTRUSTED_SOURCE_TYPES and item.id != node.id]
+            if producer.type not in UNTRUSTED_SOURCE_TYPES and not self.graph.any_path(sources, [producer], data_only=True):
                 continue
             fields = self._reference_field_names(ref)
-            if words and not any(word in field for word in words for field in fields):
+            if words and not any(field_matches(field, words) for field in fields):
                 continue
             refs.append(ref)
         return refs
 
-    def emit(self, rule_id: str, node_ids: list[str], message: str, *, status: Status, severity: Severity | None = None, confidence: float = 1.0, evidence: list[str] | None = None, missing_context: list[str] | None = None, report_group: str | None = None, remediation: list[str] | None = None) -> None:
+    def sensitive_path(self, source: Node, sink: Node) -> list[str] | None:
+        """Start a disclosure trace on a sensitive bound field, not every source output."""
+        whole_source_sensitive = any(source.config.get(key) not in (None, False, "", [], {})
+                                     for key in ("classification", "dataClassification", "sensitivity", "pii"))
+        for ref in self.ir.variable_refs:
+            if ref.producer_node_id != source.id:
+                continue
+            fields = self._reference_field_names(ref)
+            if not whole_source_sensitive and not any(field_matches(value, SENSITIVE_WORDS | {"pii", "confidential"}) for value in fields):
+                continue
+            tail = self.graph.path(ref.consumer_node_id, sink.id, data_only=True)
+            if tail and source.id not in tail:
+                return [source.id, *tail]
+        return None
+
+    def emit(self, rule_id: str, node_ids: list[str], message: str, *, status: Status, severity: Severity | None = None, confidence: float = 1.0, evidence: list[str] | None = None, missing_context: list[str] | None = None, report_group: str | None = None, remediation: list[str] | None = None, semantic_evidence: dict[str, Any] | None = None) -> None:
         key = (rule_id, tuple(node_ids), message)
         if key in self._dedupe:
             return
@@ -546,7 +578,7 @@ class SecurityEngine:
         rule = self.catalog.get(rule_id)
         locations = [self.graph.nodes[node_id].json_pointer for node_id in node_ids if node_id in self.graph.nodes]
         fact_id = stable_id("FACT", rule_id, *node_ids, message)
-        self.facts.append(Fact(fact_id, rule_id, node_ids, evidence or locations, {"message": message}))
+        self.facts.append(Fact(fact_id, rule_id, node_ids, evidence or locations, {"message": message, **({"semantic_evidence": semantic_evidence} if semantic_evidence else {})}))
         self.findings.append(Finding(
             id=stable_id("FINDING", rule_id, *node_ids, message),
             rule_id=rule_id,
@@ -620,6 +652,17 @@ class SecurityEngine:
         return self.facts, aggregated, candidates
 
     def _structure_rules(self) -> None:
+        # Credential scanning covers every node and workflow metadata. Prefix
+        # boundaries and deepest ownership avoid attributing /nodes/10 to /nodes/1.
+        secret_owners: dict[str, list[str]] = defaultdict(list)
+        for location in self.ir.raw_metadata.get("secret_locations", []):
+            owners = [node for node in self.ir.nodes if location.startswith(node.json_pointer + "/")]
+            owner = max(owners, key=lambda item: len(item.json_pointer)) if owners else None
+            secret_owners[owner.id if owner else ""].append(location)
+        for owner_id, locations in secret_owners.items():
+            owner = self.graph.nodes.get(owner_id)
+            rule = "LLM-002" if owner and owner.type in {NodeType.LLM.value, NodeType.AGENT.value} else "TOOL-012"
+            self.emit(rule, [owner_id] if owner else [], "DSL 包含凭据字面量特征；仅确认材料暴露，未验证凭据有效性。", status=Status.CONFIRMED, evidence=locations)
         for gap in self.ir.coverage_gaps:
             reason = str(gap.get("reason") or "")
             node_ids = [str(gap["node_id"])] if gap.get("node_id") in self.graph.nodes else []
@@ -715,8 +758,6 @@ class SecurityEngine:
         if input_refs and not _contains_words(prompt, INSTRUCTION_GUARDS):
             self.emit("IN-004", [input_refs[0].producer_node_id, node.id], "入口数据进入模型 Prompt，未发现明确的不可信数据边界。", status=Status.OBSERVED)
             self.emit("LLM-001", [input_refs[0].producer_node_id, node.id], "Prompt 未声明用户内容不能覆盖系统目标或触发未授权动作。", status=Status.OBSERVED)
-        if self.ir.raw_metadata.get("secret_locations") and any(location.startswith(node.json_pointer) for location in self.ir.raw_metadata["secret_locations"]):
-            self.emit("LLM-002", [node.id], "模型节点包含疑似真实密钥或授权材料。", status=Status.CONFIRMED)
         keys = _flatten_keys(node.config.get("modelConfig", {}))
         if (node.type == NodeType.AGENT.value or impact.consequential) and not keys.intersection(LIMIT_KEYS):
             self.emit("LLM-004", [node.id], "模型节点未导出令牌、步骤或迭代预算。", status=Status.COVERAGE_GAP, missing_context=["platform_model_budget"])
@@ -737,10 +778,21 @@ class SecurityEngine:
     def _tool_rules(self, node: Node) -> None:
         impact = self.impact(node)
         if node.type == NodeType.CODE.value:
-            code_kinds = [item for item in ("CODE_DYNAMIC_EXEC", "CODE_PROCESS", "CODE_NETWORK", "CODE_FILE_IO") if item in node.capabilities]
-            if code_kinds:
-                severity = Severity.CRITICAL if "CODE_DYNAMIC_EXEC" in code_kinds else Severity.HIGH
-                self.emit("TOOL-004", [node.id], f"内嵌代码调用危险原语类别：{', '.join(code_kinds)}。", status=Status.CONFIRMED, severity=severity)
+            analysis = analyze_python(str(node.config.get("code") or "")) if "CODE_LANGUAGE_UNSUPPORTED" not in node.capabilities else None
+            for call in analysis.calls if analysis else []:
+                execution = call.kind in {"CODE_DYNAMIC_EXEC", "CODE_PROCESS", "CODE_DESERIALIZE", "CODE_SQL"}
+                rule_id = "TOOL-003" if call.kind == "CODE_NETWORK" and call.dynamic else "TOOL-004"
+                self.emit(rule_id, [node.id],
+                          f"代码第 {call.line} 行调用 {call.name}；" + ("解释器、查询或资源参数为动态表达式，需验证输入来源与运行时约束。" if call.dynamic else "敏感参数为固定值，或固定可执行文件仅接收数据参数；仅记录能力观察。"),
+                          status=Status.PROBABLE if call.dynamic else Status.OBSERVED,
+                          severity=Severity.HIGH if call.dynamic and execution else Severity.MEDIUM if call.dynamic else Severity.LOW,
+                          confidence=0.85 if call.dynamic else 1.0,
+                          report_group="risk" if call.dynamic else "posture",
+                          evidence=[f"{node.json_pointer}/data/code"],
+                          semantic_evidence={"analysis": "python_ast", "call": call.name, "line": call.line, "kind": call.kind, "dynamic_argument": call.dynamic, "argument_names": call.input_names},
+                          missing_context=["code_runtime_policy"] if call.dynamic else [])
+            if analysis and analysis.gaps.intersection({"CODE_UNRESOLVED_CALL", "CODE_ANALYSIS_LIMIT"}):
+                self.emit("TOOL-011", [node.id], "代码包含无法静态解析的动态调用，或超过语义分析预算；不能认定该部分安全。", status=Status.COVERAGE_GAP, missing_context=["code_call_resolution"])
             if "CODE_PARSE_ERROR" in node.capabilities:
                 self.emit("TOOL-011", [node.id], "声明为 Python 的代码无法通过 AST 语法解析，危险原语覆盖不完整。", status=Status.COVERAGE_GAP, missing_context=["platform_code_wrapper_semantics"])
             if "CODE_LANGUAGE_UNSUPPORTED" in node.capabilities:
@@ -802,8 +854,6 @@ class SecurityEngine:
                 else "子工作流调用未导出被调输入输出契约、委派身份或失败语义。"
             )
             self.emit("FLOW-011", [node.id], message, status=Status.COVERAGE_GAP, missing_context=["callee_contract", "delegated_identity"])
-        if self.ir.raw_metadata.get("secret_locations") and any(location.startswith(node.json_pointer) for location in self.ir.raw_metadata["secret_locations"]):
-            self.emit("TOOL-012", [node.id], "工具节点包含疑似真实密钥或授权材料。", status=Status.CONFIRMED)
         agent_visible_auth = [param for spec in specs for param in spec["parameters"] if param.get("agent_visible") is True and any(word in str(param.get("name") or "").lower() for word in ("authorization", "api-key", "apikey", "token", "secret"))]
         if agent_visible_auth:
             self.emit("TOOL-012", [node.id], "认证语义参数被标记为 Agent 可见；是否只暴露占位符不能从 DSL 确认。", status=Status.COVERAGE_GAP, missing_context=["runtime_credential_injection"])
@@ -935,6 +985,14 @@ class SecurityEngine:
         """
         if node.type != NodeType.CONDITION.value or not _contains_words(f"{node.title} {node.config}", CONTROL_WORDS):
             return False
+        if any(gap.get("node_id") == node.id and gap.get("reason") in {
+            "unresolved_symbol", "ambiguous_symbol", "condition_reference_unbound", "required_reference_unbound"
+        } for gap in self.ir.coverage_gaps):
+            return False
+        # User/model-provided approval is data, not a trusted authorization decision.
+        untrusted = [item for item in self.ir.nodes if item.type in UNTRUSTED_SOURCE_TYPES and item.id != node.id]
+        if self.graph.any_path(untrusted, [node], data_only=True):
+            return False
         raw_cases = node.config.get("conditionList")
         cases = [item for item in raw_cases if isinstance(item, dict)] if isinstance(raw_cases, list) else []
         if not cases or len(cases) != len(raw_cases):
@@ -949,6 +1007,12 @@ class SecurityEngine:
         for edge in self.graph.out_edges.get(node.id, []):
             if not self.graph.path(edge.target, sink.id, control_only=True):
                 continue
+            raw_handle = str(edge.source_handle or "")
+            encoded_match = re.search(r"-(\d+)$", raw_handle)
+            encoded = int(encoded_match.group(1)) if encoded_match else None
+            ordinal = handles[edge.source_index] if isinstance(edge.source_index, int) and 0 <= edge.source_index < len(handles) else None
+            if encoded is not None and edge.source_index is not None and encoded not in {edge.source_index, ordinal}:
+                return False
             branch = _edge_condition_handle(edge, handles)
             if branch is None or branch in ELSE_HANDLES:
                 return False
@@ -973,7 +1037,10 @@ class SecurityEngine:
                     and (second := self.graph.path(control_id, sink.id, control_only=True))
                 ), None)
                 direct_argument_control = bool(self.untrusted_refs(sink, DANGEROUS_ARGUMENT_WORDS))
-                decisive_impact = sink.high_impact or direct_argument_control
+                # AST capability does not prove code runtime privilege or a
+                # missing sandbox. Do not re-upgrade a PROBABLE code call via
+                # its surrounding control path.
+                decisive_impact = sink.type != NodeType.CODE.value and (sink.high_impact or direct_argument_control)
                 path_status = Status.CONFIRMED if decisive_impact else Status.PROBABLE
                 path_confidence = 1.0 if decisive_impact else 0.8
                 if unguarded and guarded:
@@ -1049,11 +1116,11 @@ class SecurityEngine:
         external_sinks = [item for item in nodes if item.external]
         for source in sensitive_sources:
             for sink in external_sinks:
-                path = self.graph.path(source.id, sink.id, data_only=True)
+                path = self.sensitive_path(source, sink)
                 if path:
                     self.emit("FLOW-008", path, "具有敏感语义的数据可达外部工具或输出边界。", status=Status.PROBABLE, confidence=0.78)
             for output in outputs:
-                path = self.graph.path(source.id, output.id, data_only=True)
+                path = self.sensitive_path(source, output)
                 if path and not _flatten_keys(output.config).intersection({"redaction", "masking", "audience", "accesspolicy", "access_policy"}):
                     self.emit("OUT-002", path, "敏感语义数据可达最终输出，但受众、脱敏和访问策略不在 JSON 中。", status=Status.COVERAGE_GAP, missing_context=["output_audience", "redaction_policy"])
         for kb in knowledge:
@@ -1070,7 +1137,7 @@ class SecurityEngine:
             for second in effectful:
                 if first.id == second.id:
                     continue
-                path = self.graph.path(first.id, second.id)
+                path = self.graph.path(first.id, second.id, control_only=True)
                 if path and not any(_flatten_keys(self.graph.nodes[item].config).intersection({"idempotency", "compensation", "circuit_breaker", "failclosed"}) for item in path if item in self.graph.nodes):
                     self.emit("FLOW-010", path, "多个副作用能力串联，路径中未发现幂等、补偿、熔断或失败关闭。", status=Status.PROBABLE, confidence=0.8)
 

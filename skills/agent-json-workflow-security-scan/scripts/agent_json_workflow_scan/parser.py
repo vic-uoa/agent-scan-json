@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Any
 import ast
 import json
+import math
 import re
 
 from jsonschema import Draft202012Validator
 
 from .models import Edge, Node, NodeType, VariableRef, WorkflowIR, file_sha256, stable_id
+from .semantics import analyze_python, contains_secret
 
 
 MAX_DSL_BYTES = 10 * 1024 * 1024
@@ -35,13 +37,6 @@ NODE_TYPES = {
     "LOOP_OUTPUT": NodeType.STRUCTURAL,
 }
 
-SECRET_RE = re.compile(
-    r"(?ix)(?:"
-    r"(?:api[_-]?key|access[_-]?token|client[_-]?secret|password|passwd|authorization)\s*[:=]\s*(?:bearer\s+)?['\"]?[A-Za-z0-9_\-./+=]{8,}"
-    r"|bearer\s+[A-Za-z0-9._~+/=-]{12,}|\bAKIA[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b"
-    r"|\bsk-(?:proj-)?[A-Za-z0-9_-]{16,}|-----BEGIN(?: RSA| EC| OPENSSH)? PRIVATE KEY-----)"
-)
-PLACEHOLDER_RE = re.compile(r"(?ix)(?:example|placeholder|dummy|<redacted>|your[_-]?(?:key|token|secret)|\*{3,})")
 HIGH_IMPACT_WORDS = {
     "delete", "remove", "drop", "destroy", "purge", "transfer", "payment", "refund",
     "grant", "revoke", "permission", "admin", "publish", "send", "upload",
@@ -104,7 +99,27 @@ def pointer(parts: list[Any]) -> str:
 def _load(path: Path) -> dict[str, Any]:
     if path.stat().st_size > MAX_DSL_BYTES:
         raise ValueError(f"DSL exceeds {MAX_DSL_BYTES} byte limit")
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("JSON DSL contains a duplicate object key")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError("JSON DSL contains a non-finite numeric constant")
+
+    def finite_float(value: str) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("JSON DSL contains a non-finite numeric value")
+        return number
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"), object_pairs_hook=unique_object, parse_constant=reject_constant, parse_float=finite_float)
+    except RecursionError as error:
+        raise ValueError("DSL nesting depth exceeds scanner limit") from error
     if not isinstance(payload, dict):
         raise ValueError("JSON DSL root must be an object")
     return payload
@@ -143,7 +158,7 @@ def _text(value: Any) -> str:
 
 
 def _contains_secret(value: str) -> bool:
-    return bool(SECRET_RE.search(value)) and not bool(PLACEHOLDER_RE.search(value))
+    return contains_secret(value)
 
 
 def _method(config: dict[str, Any]) -> str:
@@ -365,24 +380,7 @@ def _call_name(node: ast.AST) -> str:
 
 
 def _python_code_capabilities(code: str) -> set[str]:
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return {"CODE_PARSE_ERROR"}
-    calls = {_call_name(item.func) for item in ast.walk(tree) if isinstance(item, ast.Call)}
-    capabilities: set[str] = set()
-    families = {
-        "CODE_DYNAMIC_EXEC": {"eval", "exec", "compile", "__import__", "importlib.import_module"},
-        "CODE_PROCESS": {"os.system", "os.popen", "subprocess.call", "subprocess.run", "subprocess.Popen", "subprocess.check_call", "subprocess.check_output"},
-        "CODE_NETWORK": {"requests", "urllib", "http.client", "socket", "aiohttp", "httpx"},
-        "CODE_FILE_IO": {"open", "io.open", "pathlib.Path.open", "pathlib.Path.read_text", "pathlib.Path.write_text", "pathlib.Path.read_bytes", "pathlib.Path.write_bytes"},
-    }
-    for capability, prefixes in families.items():
-        if any(any(call == prefix or call.startswith(prefix + ".") for prefix in prefixes) for call in calls):
-            capabilities.add(capability)
-    if capabilities:
-        capabilities.add("DANGEROUS_CODE_PRIMITIVE")
-    return capabilities
+    return analyze_python(code).capabilities
 
 
 def _classify(node_type: NodeType, raw_type: str, config: dict[str, Any], specs: list[dict[str, Any]]) -> tuple[list[str], bool, bool, bool]:
@@ -406,11 +404,13 @@ def _classify(node_type: NodeType, raw_type: str, config: dict[str, Any], specs:
         code = str(config.get("code") or "")
         language = str(config.get("language") or "python").lower()
         if language in {"python", "py", "python3"}:
-            capabilities.update(_python_code_capabilities(code))
+            analysis = analyze_python(code)
+            capabilities.update(analysis.capabilities)
+            high = any(call.dynamic and call.kind in {"CODE_DYNAMIC_EXEC", "CODE_PROCESS", "CODE_DESERIALIZE", "CODE_SQL"} for call in analysis.calls)
+            effectful = high or any(call.kind == "CODE_NETWORK" and call.name.rsplit(".", 1)[-1] in {"post", "put", "patch", "delete"} for call in analysis.calls)
+            external = "CODE_NETWORK" in capabilities
         else:
             capabilities.add("CODE_LANGUAGE_UNSUPPORTED")
-        if "DANGEROUS_CODE_PRIMITIVE" in capabilities:
-            effectful = high = True
     if node_type in {NodeType.TOOL, NodeType.AGENT}:
         for spec in specs:
             kind = spec["kind"]
@@ -700,7 +700,13 @@ def parse_workflow(path: Path) -> tuple[WorkflowIR, dict[str, Any]]:
     for node in nodes:
         node.variable_refs = by_consumer.get(node.id, [])
 
-    secrets = [pointer(path_parts) for path_parts, value in walk(document) if isinstance(value, str) and _contains_secret(value)]
+    secrets = [pointer(path_parts) for path_parts, value in walk(document)
+               if isinstance(value, str) and contains_secret(value, str(path_parts[-1]) if path_parts else "")]
+    for path_parts, value in walk(document):
+        if isinstance(value, dict) and isinstance(value.get("value"), str):
+            if str(value.get("variableType") or value.get("type") or "").lower() not in {"reference", "variable", "ref"} and contains_secret(value["value"], str(value.get("name") or "")):
+                secrets.append(pointer([*path_parts, "value"]))
+    secrets = sorted(set(secrets))
     ir = WorkflowIR(
         workflow_id=str(graph.get("id") or path.stem),
         workflow_hash=file_sha256(path),

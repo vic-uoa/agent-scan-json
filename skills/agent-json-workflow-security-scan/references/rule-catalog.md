@@ -13,6 +13,8 @@
 
 当前目录包含 54 条规则。数量不是准确率指标；规则只有在节点类型、字段契约、数据/控制路径和证据状态满足时才适用。逐节点审核面见 [node-review-matrix.md](node-review-matrix.md)。
 
+0.2.0 保留规则编号并扩充调用参数语义、跨 CODE 来源追踪、字段选择、凭据候选匹配与授权门判定。`TOOL-004` 调整为语义审查，覆盖动态执行、进程、SQL、反序列化及资源参数；固定参数为配置观察，动态参数为待验证风险。`TOOL-012` 扩展到全 DSL，`TOOL-011` 纳入扫描器完整性。来源和限制详见 [语义精度改进](semantic-precision.md)。
+
 主控制基线为 [OWASP AISVS 1.0](https://owasp.org/www-project-artificial-intelligence-security-verification-standard-aisvs-docs/)；风险映射使用 [OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/2025/12/09/owasp-genai-security-project-releases-top-10-risks-and-mitigations-for-agentic-ai-security/)、[OWASP Top 10 for LLM Applications 2025](https://genai.owasp.org/llm-top-10/)、[MITRE ATLAS](https://atlas.mitre.org/)、[OWASP ASVS 5.0](https://owasp.org/www-project-application-security-verification-standard/) 和 CWE。NIST AI 100-2 用于术语与威胁分类，不作为单字段漏洞判据。
 
 截至 2026-08，OWASP 事故映射仍使用 LLM Top 10 2025，而 Agentic Top 10 使用 2026 版。因此规则 ID 分别写作 `LLMxx:2025` 和 `ASIxx:2026`，不虚构 `LLMxx:2026` 版本。AISVS 的 `C2/C5/...` 是章节级映射；在没有逐项验证上下文时，不冒充具体要求已满足或已违反。

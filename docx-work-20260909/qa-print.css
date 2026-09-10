@@ -1,0 +1,15 @@
+@page { size: A4; margin: 18mm 18mm 20mm; }
+body { font-family: "Microsoft YaHei", "SimSun", sans-serif; color: #333; font-size: 10pt; line-height: 1.45; }
+h1 { color: #1f4e78; font-size: 16pt; break-before: auto; margin-top: 0; }
+h1:nth-of-type(2), h1:nth-of-type(3), h1:nth-of-type(4) { break-before: page; }
+h2 { color: #1f4e78; font-size: 13pt; margin-top: 12pt; break-after: avoid; }
+h3 { color: #404040; font-size: 11.5pt; margin-top: 10pt; break-after: avoid; }
+p { text-align: justify; margin: 4pt 0; }
+table { width: 100%; border-collapse: collapse; margin: 7pt 0 10pt; font-size: 8.8pt; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th { background: #1f4e78; color: white; font-weight: 700; text-align: center; }
+th, td { border: 0.6pt solid #a6a6a6; padding: 5pt; vertical-align: middle; }
+tr:nth-child(even) td { background: #f8fbfd; }
+img { max-width: 100%; height: auto; }
+figure { break-inside: avoid; text-align: center; }

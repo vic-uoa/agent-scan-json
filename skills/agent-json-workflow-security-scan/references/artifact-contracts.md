@@ -1,5 +1,11 @@
 # 扫描对象与报告契约
 
+## 0.2.0 兼容扩展
+
+CODE Fact 的 `data.semantic_evidence` 可选字段包含 AST 调用名、行号、能力类别、动态参数标记和参数变量名；旧的 Fact/Finding 必填字段不变，不包含代码或凭据原文。具体格式见 [semantic-precision.md](semantic-precision.md)。
+
+豁免记录必须提供与当前 DSL 完全一致的 `workflow_hash`、有效 `finding_id`、审批人、理由，以及带时区且未到期的 ISO 8601 `expires_at`。缺失哈希、时区、已过期或格式错误的记录均拒绝；这是门禁语义收紧，旧的无哈希豁免需要重新绑定。代码调用、语法、语言及分析预算缺口计入 INCOMPLETE，不能被归为仅需运行时证据。
+
 ## 落盘边界
 
 单次扫描只写入一份最终 HTML：

@@ -1,20 +1,28 @@
 schema_version: 1.0.0
 policies:
   - name: deterministic_integrity
-    rule_ids: [FLOW-001, FLOW-003, FLOW-013, FLOW-014, FLOW-016, FLOW-017, IN-001, IN-003, LLM-002, TOOL-004, TOOL-011, TOOL-012, TOOL-013, OUT-006, KB-001, KB-006]
+    rule_ids: [FLOW-001, FLOW-003, FLOW-013, FLOW-014, FLOW-016, FLOW-017, IN-001, IN-003, LLM-002, TOOL-012, TOOL-013, OUT-006, KB-001, KB-006]
     path_requirement: none
     impact_floor: local
     absence_handling: never_confirm_from_absence
     default_report_group: risk
-    exclusions: [unreachable_cross_node_path, placeholder_secret, platform_valid_ordinal_handle_mapping]
+    exclusions: [unreachable_cross_node_path, exact_candidate_placeholder, platform_valid_ordinal_handle_mapping]
 
   - name: coverage_integrity
-    rule_ids: [FLOW-002, TOOL-001]
+    rule_ids: [FLOW-002, TOOL-001, TOOL-011]
     path_requirement: none
     impact_floor: local
     absence_handling: coverage_gap
     default_report_group: coverage_gap
-    exclusions: [known_node_contract, registered_tool_capability]
+    exclusions: [known_node_contract, registered_tool_capability, resolved_call_within_analysis_budget]
+
+  - name: code_call_semantics
+    rule_ids: [TOOL-004]
+    path_requirement: ast_sensitive_argument_expression
+    impact_floor: interpreter_query_or_resource_boundary
+    absence_handling: probable_dynamic_argument_or_coverage_gap
+    default_report_group: posture
+    exclusions: [comments_and_strings, data_only_library_call, fixed_argv_data_arguments, bound_sql_values, safe_yaml_loader, fixed_sensitive_argument]
 
   - name: untrusted_to_consequence
     rule_ids: [FLOW-004, FLOW-005, FLOW-006, FLOW-008, FLOW-009, LLM-003, LLM-006, TOOL-002, TOOL-003, TOOL-009, OUT-002, KB-003]
@@ -22,7 +30,7 @@ policies:
     impact_floor: user_visible_or_external
     absence_handling: not_applicable_without_path
     default_report_group: risk
-    exclusions: [deterministic_gate_on_all_paths, structured_contract, fixed_target, trusted_content_boundary, intended_authorized_recipient]
+    exclusions: [affirmative_trusted_gate_on_all_control_paths, rule_specific_structured_contract, fixed_target, fixed_network_authority, trusted_content_boundary, intended_authorized_recipient, unbound_sensitive_sibling]
 
   - name: agent_and_side_effect_governance
     rule_ids: [FLOW-010, FLOW-012, TOOL-010]

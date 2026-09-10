@@ -18,6 +18,8 @@ CASES = [
     {"name": "safe-workflow", "gate": "PASS", "max_findings": 0},
     {"name": "risky-workflow", "gate": "FAIL", "required": {"FLOW-009", "LLM-003", "TOOL-005"}},
     {"name": "contract-workflow", "gate": "REVIEW", "required": {"FLOW-007", "FLOW-012", "TOOL-008"}},
+    {"name": "semantic-safe-workflow", "gate": "PASS", "max_findings": 0},
+    {"name": "semantic-risk-workflow", "gate": "REVIEW", "required": {"TOOL-003", "TOOL-004"}},
 ]
 
 

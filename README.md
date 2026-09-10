@@ -4,6 +4,8 @@
 
 当前实现位于 `skills/agent-json-workflow-security-scan/`。扫描器不会运行工作流、工具、MCP、Prompt 或内嵌代码。
 
+0.2.0 增强了 Python 调用参数语义、跨 CODE 不可信来源、对象字段选择、凭据候选匹配和授权分支判定；修复长路径截断、代码覆盖缺口分类和过期豁免。规则数量保持 54 条，具体变化、外部库参考与限制见 [语义精度改进说明](skills/agent-json-workflow-security-scan/references/semantic-precision.md)。
+
 当前内部方言契约覆盖 `HEAD`、`MODEL`、`AGENT`、插件、MCP、知识库、子工作流、`CODE`、`JUDGE`、`LOOP` 和输出节点，并为每个节点输出多维审核记录。确定性引擎独占 Finding 和质量门禁；可选模型顾问只能补充经过引用校验的惰性测试、复核问题和非权威措辞。
 
 ```powershell

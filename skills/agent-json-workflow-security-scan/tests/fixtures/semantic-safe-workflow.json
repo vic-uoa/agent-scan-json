@@ -1,0 +1,17 @@
+{
+  "id": "semantic-safe-workflow",
+  "nodes": [
+    {"id": "start", "data": {"type": "HEAD", "label": "受限业务输入", "paramList": [
+      {"name": "text", "type": "String", "required": true, "maxLength": 100}
+    ]}},
+    {"id": "code", "data": {"type": "CODE", "label": "固定程序与参数化查询", "language": "python",
+      "input": [{"name": "text", "type": "String", "variable": "start.text", "variableType": "REFERENCE"}],
+      "code": "import subprocess\nimport requests\ndef main(text):\n    subprocess.run(['echo', text], shell=False)\n    cursor.execute('SELECT label FROM items WHERE id=?', (text,))\n    requests.get('https://service.invalid/', params={'q': text})\n    return {'result': text}",
+      "outputName": "processed", "outputType": "Object", "output": [{"name": "result", "type": "String"}]
+    }},
+    {"id": "out", "data": {"type": "TEMPLATE", "label": "结构化输出", "outputType": "Object",
+      "output": [{"name": "result", "type": "String", "variable": "processed.result", "variableType": "REFERENCE"}]
+    }}
+  ],
+  "edges": [{"id": "e1", "source": "start", "target": "code"}, {"id": "e2", "source": "code", "target": "out"}]
+}

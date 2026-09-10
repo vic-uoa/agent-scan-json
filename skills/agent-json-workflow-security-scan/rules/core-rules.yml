@@ -35,15 +35,15 @@ rules:
   - {id: TOOL-001, title: 工具能力或副作用无法确定, severity: MEDIUM, detectability: H, control_domain: tool_contract, standards: ["ASI02:2026", "AISVS v1.0-C9"], dynamic_test: unknown_tool_capability}
   - {id: TOOL-002, title: 高影响工具参数可由不可信数据控制, severity: HIGH, detectability: S, control_domain: action_authorization, standards: ["ASI02:2026", "ASI03:2026", "CWE-20"], dynamic_test: controllable_tool_argument}
   - {id: TOOL-003, title: 动态网络目标形成 SSRF 风险, severity: HIGH, detectability: S, control_domain: egress_control, standards: ["ASVS 5.0 V1.3.6", "CWE-918"], dynamic_test: ssrf}
-  - {id: TOOL-004, title: 代码节点包含危险执行或网络原语, severity: CRITICAL, detectability: S, control_domain: execution_boundary, standards: ["ASI05:2026", "CWE-94", "CWE-78"], dynamic_test: unexpected_code_execution}
+  - {id: TOOL-004, title: 代码执行与资源参数语义审查, severity: HIGH, detectability: H, control_domain: execution_boundary, standards: ["ASI05:2026", "CWE-94", "CWE-78", "CWE-89", "CWE-502", "CWE-22"], dynamic_test: unexpected_code_execution}
   - {id: TOOL-005, title: 工具身份认证或对象授权不可验证, severity: HIGH, detectability: M, control_domain: identity_authorization, standards: ["ASI03:2026", "AISVS v1.0-C5", "ASVS 5.0 V8"], dynamic_test: authorization_bypass}
   - {id: TOOL-006, title: 工具输出缺少可验证 Schema, severity: MEDIUM, detectability: S, control_domain: structured_data_contract, standards: ["LLM05:2025", "AISVS v1.0-C9"], dynamic_test: tool_output_contract}
   - {id: TOOL-007, title: 外部调用超时重试和幂等策略不可验证, severity: MEDIUM, detectability: M, control_domain: resilience_budget, standards: ["ASI08:2026", "AISVS v1.0-C9"], dynamic_test: tool_timeout}
   - {id: TOOL-008, title: 工具或 MCP 供应链完整性不可验证, severity: HIGH, detectability: M, control_domain: supply_chain, standards: ["ASI04:2026", "AISVS v1.0-C6", "LLM03:2025"], dynamic_test: tool_supply_chain}
   - {id: TOOL-009, title: 不可信工具输出进入模型指令边界, severity: LOW, detectability: S, control_domain: instruction_boundary, standards: ["LLM01:2025", "ASI01:2026"], dynamic_test: tool_output_prompt_injection}
   - {id: TOOL-010, title: 高后果动作缺少确定性动作门, severity: HIGH, detectability: H, control_domain: action_authorization, standards: ["ASI02:2026", "AISVS v1.0-C9"], dynamic_test: action_gate_bypass}
-  - {id: TOOL-011, title: 代码语言或语法无法完整静态分析, severity: MEDIUM, detectability: S, control_domain: execution_boundary, standards: ["ASI05:2026", "CWE-94"], dynamic_test: unexpected_code_execution}
-  - {id: TOOL-012, title: 工具参数包含或可能暴露认证材料, severity: HIGH, detectability: S, control_domain: data_protection, standards: ["ASI03:2026", "LLM02:2025", "CWE-798"], dynamic_test: prompt_secret_leakage}
+  - {id: TOOL-011, title: 代码语言、调用或分析预算存在覆盖缺口, severity: MEDIUM, detectability: S, control_domain: execution_boundary, standards: ["ASI05:2026", "CWE-94"], dynamic_test: unexpected_code_execution}
+  - {id: TOOL-012, title: DSL 配置包含或可能暴露认证材料, severity: HIGH, detectability: S, control_domain: data_protection, standards: ["ASI03:2026", "LLM02:2025", "CWE-798"], dynamic_test: prompt_secret_leakage}
   - {id: TOOL-013, title: 代码返回类型与节点声明契约不一致, severity: MEDIUM, detectability: S, control_domain: output_contract, report_group: posture, standards: ["AISVS v1.0-C7", "AISVS v1.0-C9", "CWE-704"], dynamic_test: code_output_contract}
 
   - {id: OUT-001, title: 最终输出缺少或违反结构化契约, severity: HIGH, detectability: S, control_domain: output_contract, standards: ["LLM05:2025", "AISVS v1.0-C7"], dynamic_test: output_schema}

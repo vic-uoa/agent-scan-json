@@ -1,0 +1,21 @@
+{
+  "id": "semantic-risk-workflow",
+  "nodes": [
+    {"id": "start", "data": {"type": "HEAD", "label": "不可信业务输入", "paramList": [
+      {"name": "text", "type": "String", "required": true, "maxLength": 100},
+      {"name": "url", "type": "String", "required": true, "maxLength": 200}
+    ]}},
+    {"id": "code", "data": {"type": "CODE", "label": "动态命令与网络目标", "language": "python",
+      "input": [
+        {"name": "text", "type": "String", "variable": "start.text", "variableType": "REFERENCE"},
+        {"name": "url", "type": "String", "variable": "start.url", "variableType": "REFERENCE"}
+      ],
+      "code": "from subprocess import run as launch\nimport requests as http\ndef main(text, url):\n    launch(text, shell=True)\n    http.get(url)\n    return {'result': text}",
+      "outputName": "processed", "outputType": "Object", "output": [{"name": "result", "type": "String"}]
+    }},
+    {"id": "out", "data": {"type": "TEMPLATE", "label": "结构化输出", "outputType": "Object",
+      "output": [{"name": "result", "type": "String", "variable": "processed.result", "variableType": "REFERENCE"}]
+    }}
+  ],
+  "edges": [{"id": "e1", "source": "start", "target": "code"}, {"id": "e2", "source": "code", "target": "out"}]
+}

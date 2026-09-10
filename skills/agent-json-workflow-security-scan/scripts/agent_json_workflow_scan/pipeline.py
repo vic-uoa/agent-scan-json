@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 import json
 import uuid
@@ -64,7 +65,12 @@ def apply_waivers(findings: list[Finding], payload: dict[str, Any], workflow_has
         waiver_id = str(waiver.get("id") or "")
         finding_id = str(waiver.get("finding_id") or "")
         valid = bool(waiver_id and finding_id and waiver.get("approver") and waiver.get("justification") and waiver.get("expires_at"))
-        if waiver.get("workflow_hash") not in (None, "", workflow_hash):
+        if waiver.get("workflow_hash") != workflow_hash:
+            valid = False
+        try:
+            expires_at = datetime.fromisoformat(str(waiver.get("expires_at") or "").replace("Z", "+00:00"))
+            valid = valid and expires_at.tzinfo is not None and expires_at > datetime.now(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
             valid = False
         finding = next((item for item in findings if item.id == finding_id), None)
         if valid and finding:
@@ -83,7 +89,8 @@ def quality_gate(findings: list[Finding], waiver_audit: dict[str, Any]) -> dict[
     coverage_gaps = [item.id for item in findings if not item.waived and item.report_group == "coverage_gap"]
     scanner_gap_ids = [
         item.id for item in findings
-        if not item.waived and item.report_group == "coverage_gap" and item.rule_id in {"FLOW-002", "FLOW-003"}
+        if not item.waived and item.report_group == "coverage_gap"
+        and {item.rule_id, *item.related_rule_ids}.intersection({"FLOW-002", "FLOW-003", "TOOL-011"})
     ]
     runtime_gap_ids = [item for item in coverage_gaps if item not in scanner_gap_ids]
     result = "FAIL" if blockers else "REVIEW" if reviews else "PASS"

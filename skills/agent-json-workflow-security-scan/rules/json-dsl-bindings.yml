@@ -26,7 +26,7 @@ bindings:
   - {rule_ids: [TOOL-004], node_types: [CODE], dsl_fields: [language, code, paramList], runtime_context: [sandbox_policy]}
   - {rule_ids: [TOOL-009], node_types: [MODEL, AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [output, tools, edges], runtime_context: [tool_output_validation]}
   - {rule_ids: [TOOL-011], node_types: [CODE], dsl_fields: [language, code], runtime_context: [language_parser, sandbox_policy]}
-  - {rule_ids: [TOOL-012], node_types: [AGENT, AI_PLUGIN, API_PLUGIN, MCP, WORKFLOW], dsl_fields: [auth, header, body, query, tools], runtime_context: [credential_injection_policy]}
+  - {rule_ids: [TOOL-012], node_types: ["*"], dsl_fields: [auth, header, body, query, tools, code, value, workflow_metadata], runtime_context: [credential_injection_policy]}
   - {rule_ids: [TOOL-013], node_types: [CODE], dsl_fields: [language, code, outputType, output], runtime_context: []}
   - {rule_ids: [OUT-001, OUT-002, OUT-004], node_types: [TEMPLATE, INTERMEDIATE_OUTPUT], dsl_fields: [output, outputType, isJsonOutput, historyMsgVariables], runtime_context: [renderer_policy]}
   - {rule_ids: [OUT-003], node_types: [INTERMEDIATE_OUTPUT], dsl_fields: [historyMsgStr, historyMsgVariables], runtime_context: [audience_policy]}
